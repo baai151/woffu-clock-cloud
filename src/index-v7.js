@@ -1,3 +1,4 @@
+import { isAuthorized, unauthorizedResponse } from "./browser-auth.js";
 import app from "./index-v6.js";
 import { getPunchBlockReason } from "./index-v5.js";
 
@@ -28,12 +29,12 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/woffu/punch") {
-      if (!isAuthorized(request, env)) return unauthorizedResponse();
+      if (!await isAuthorized(request, env)) return unauthorizedResponse(request);
       return htmlResponse(punchPage(env));
     }
 
     if (request.method === "POST" && url.pathname === "/api/woffu/punch-now") {
-      if (!isAuthorized(request, env)) return unauthorizedResponse();
+      if (!await isAuthorized(request, env)) return unauthorizedResponse(request);
       try {
         assertSameOrigin(request, url);
 
@@ -398,31 +399,9 @@ function safeErrorForLog(error) {
   return { name: error?.name, message: error?.message };
 }
 
-function isAuthorized(request, env) {
-  const header = request.headers.get("Authorization");
-  if (!header || !header.startsWith("Basic ")) return false;
-  try {
-    const decoded = atob(header.substring(6));
-    const separator = decoded.indexOf(":");
-    if (separator === -1) return false;
-    return decoded.substring(0, separator) === "admin" && decoded.substring(separator + 1) === env.ADMIN_PASSWORD;
-  } catch { return false; }
-}
-
 function assertSameOrigin(request, url) {
   const origin = request.headers.get("Origin");
   if (origin && origin !== url.origin) throw new WoffuError(403, "BAD_ORIGIN", "Origen no permitido.");
-}
-
-function unauthorizedResponse() {
-  return new Response("Authentication required", {
-    status: 401,
-    headers: {
-      "WWW-Authenticate": 'Basic realm="Woffu Clock"',
-      "Cache-Control": "no-store",
-      "X-Woffu-Clock-Version": APP_VERSION,
-    },
-  });
 }
 
 function jsonResponse(data, status = 200) {

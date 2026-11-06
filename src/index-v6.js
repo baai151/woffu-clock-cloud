@@ -1,3 +1,4 @@
+import { isAuthorized, unauthorizedResponse } from "./browser-auth.js";
 import app from "./index-v5.js";
 
 const APP_VERSION = "3.1.0-woffu-auth-test";
@@ -23,8 +24,8 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/woffu/test") {
-      if (!isAuthorized(request, env)) {
-        return unauthorizedResponse();
+      if (!await isAuthorized(request, env)) {
+        return unauthorizedResponse(request);
       }
 
       try {
@@ -355,35 +356,6 @@ function safeErrorForLog(error) {
     name: error?.name,
     message: error?.message,
   };
-}
-
-function isAuthorized(request, env) {
-  const header = request.headers.get("Authorization");
-  if (!header || !header.startsWith("Basic ")) return false;
-
-  try {
-    const decoded = atob(header.substring(6));
-    const separator = decoded.indexOf(":");
-    if (separator === -1) return false;
-
-    return (
-      decoded.substring(0, separator) === "admin" &&
-      decoded.substring(separator + 1) === env.ADMIN_PASSWORD
-    );
-  } catch {
-    return false;
-  }
-}
-
-function unauthorizedResponse() {
-  return new Response("Authentication required", {
-    status: 401,
-    headers: {
-      "WWW-Authenticate": 'Basic realm="Woffu Clock"',
-      "Cache-Control": "no-store",
-      "X-Woffu-Clock-Version": APP_VERSION,
-    },
-  });
 }
 
 function jsonResponse(data, status = 200) {

@@ -1,8 +1,9 @@
+import { isAuthorized, unauthorizedResponse } from "./browser-auth.js";
 import { OFFICES, HOLIDAY_CALENDAR_VERSION, isOffice, hasHolidayCalendar, getHoliday, getOfficeCalendar } from "./holidays.js";
 import appStyles from "./ui-styles.js";
 import { uiAssetResponse } from "./ui-assets.js";
 
-const APP_VERSION = "3.6.2-capgemini";
+const APP_VERSION = "3.6.3-capgemini";
 const TIMEZONE = "Europe/Madrid";
 const MAX_OFFSET_SECONDS = 299;
 const MAX_DAILY_DEVIATION_SECONDS = 180;
@@ -24,7 +25,7 @@ export default {
 
     if (request.method === "GET" && url.pathname.startsWith("/assets/")) {
       const asset = uiAssetResponse(url.pathname);
-      if (asset) return asset;
+      return asset || textResponse("Not found", 404);
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -44,20 +45,21 @@ export default {
       return iconResponse();
     }
 
-    if (!isAuthorized(request, env)) {
-      return new Response("Authentication required", {
-        status: 401,
-        headers: {
-          "WWW-Authenticate": 'Basic realm="Woffu Clock"',
-          "Cache-Control": "no-store",
-          "X-Woffu-Clock-Version": APP_VERSION,
-        },
-      });
+    // Safari probes these optional icons in the background; missing icons must
+    // never trigger a second authentication dialog.
+    if (["/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"].includes(url.pathname)) {
+      return textResponse("Not found", 404);
     }
+
+    if (!await isAuthorized(request, env)) return unauthorizedResponse(request);
 
     try {
       if (request.method === "GET" && url.pathname === "/") {
         return htmlResponse(appShell());
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/session") {
+        return jsonResponse({ ok: true });
       }
 
       if (url.pathname.startsWith("/api/")) {
@@ -1364,6 +1366,7 @@ function clientApp() {
     busy: false,
     loading: false,
     fresh: false,
+    authExpired: false,
     requestId: 0,
     controller: null,
     configDraft: null,
@@ -1383,26 +1386,71 @@ function clientApp() {
     saveVacations: document.getElementById("saveVacations"),
   };
 
-  const showBrandIntro = createBrandIntro();
+  const brandIntro = createBrandIntro();
   bindNavigation();
   bindGlobalActions();
-  showBrandIntro();
   restoreCache();
   loadData({ silent: Boolean(state.data) });
 
   function createBrandIntro() {
     let activeDismiss = null;
+    let authenticated = false;
+    let pending = true;
+    let opening = null;
+    let generation = 0;
 
-    // Mobile browsers can restore an existing document without loading it again.
+    function suspend() {
+      generation++;
+      opening = null;
+      pending = true;
+      activeDismiss?.(false);
+    }
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") activeDismiss?.(false);
-      else show();
+      if (document.visibilityState === "hidden") suspend();
+      else open();
     });
-    window.addEventListener("pagehide", () => activeDismiss?.(false));
-    window.addEventListener("pageshow", (event) => {
-      if (event.persisted) show();
-    });
-    return show;
+    window.addEventListener("pagehide", suspend);
+    // pageshow also covers initial Safari loads that become visible late.
+    window.addEventListener("pageshow", () => open());
+    window.addEventListener("focus", () => open());
+    return {
+      ready() {
+        authenticated = true;
+        return open({ verified: true });
+      },
+      replay: () => open({ replay: true }),
+      block() { authenticated = false; suspend(); },
+    };
+
+    async function open({ replay = false, verified = false } = {}) {
+      const intro = document.getElementById("brandIntro");
+      if (!authenticated || document.visibilityState === "hidden" ||
+          (!pending && !replay) || !intro.hidden || opening) return;
+      const current = generation;
+      const attempt = {};
+      opening = attempt;
+      try {
+        // Startup is verified by bootstrap; restored pages and explicit replays
+        // check the session without loading data or opening a password dialog.
+        if (!verified) await api("/api/session");
+        if (current !== generation) return;
+        let assetTimer;
+        try {
+          await Promise.race([
+            Promise.allSettled(Array.from(intro.querySelectorAll(".introWordmark, .introEmblemFace"),
+              (image) => image.decode?.())),
+            new Promise((resolve) => { assetTimer = setTimeout(resolve, 1500); }),
+          ]);
+        } finally { clearTimeout(assetTimer); }
+        if (current !== generation || !authenticated || document.visibilityState === "hidden") return;
+        pending = false;
+        show({ replay });
+      } catch (error) {
+        if (current === generation) toast(error.message || "No se ha podido comprobar la sesión.", true);
+      } finally {
+        if (opening === attempt) opening = null;
+      }
+    }
 
     function show({ replay = false } = {}) {
       const intro = document.getElementById("brandIntro");
@@ -1415,9 +1463,12 @@ function clientApp() {
       const backdrop = intro.querySelector(".introBackdrop");
       const previousFocus = document.activeElement;
       let fallback;
+      let frame;
       const dismiss = (restoreFocus = replay) => {
         if (intro.hidden) return;
         intro.hidden = true;
+        intro.classList.remove("introPlaying");
+        cancelAnimationFrame(frame);
         activeDismiss = null;
         app.inert = false;
         document.body.classList.remove("introActive");
@@ -1459,6 +1510,7 @@ function clientApp() {
       app.inert = true;
       document.body.classList.add("introActive");
       // Commit the hidden state so a fast page restore restarts the CSS sequence.
+      intro.classList.remove("introPlaying");
       void intro.offsetWidth;
       intro.hidden = false;
       skip.focus({ preventScroll: true });
@@ -1467,7 +1519,15 @@ function clientApp() {
       window.addEventListener("keydown", onKeyDown, true);
       reducedMotion.addEventListener("change", onMotionChange, { once: true });
       // Release the interface even if an animation event or an asset fails.
-      fallback = setTimeout(() => dismiss(), reducedMotion.matches ? 1200 : 3800);
+      fallback = setTimeout(() => dismiss(), 6000);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (intro.hidden || document.visibilityState === "hidden") return;
+          intro.classList.add("introPlaying");
+          clearTimeout(fallback);
+          fallback = setTimeout(() => dismiss(), reducedMotion.matches ? 1200 : 3800);
+        });
+      });
     }
   }
 
@@ -1490,7 +1550,10 @@ function clientApp() {
 
     els.saveVacations.addEventListener("click", saveVacations);
     els.quickToggle.addEventListener("click", () => toggleActive());
-    document.getElementById("retryLoad").addEventListener("click", () => loadData());
+    document.getElementById("retryLoad").addEventListener("click", () => {
+      if (state.authExpired) location.reload();
+      else loadData();
+    });
   }
 
   function bindGlobalActions() {
@@ -1507,7 +1570,7 @@ function clientApp() {
       if (!button) return;
 
       const action = button.dataset.action;
-      if (action === "replay-intro") return showBrandIntro({ replay: true });
+      if (action === "replay-intro") return brandIntro.replay();
       if (action === "go-settings") {
         setView("settings");
         document.getElementById(button.dataset.focus || "officeInput")?.focus();
@@ -1623,6 +1686,8 @@ function clientApp() {
       if (requestId !== state.requestId) return false;
       state.data = data;
       state.fresh = true;
+      state.authExpired = false;
+      document.getElementById("retryLoad").textContent = "Actualizar datos";
       state.manualDay = data.manualDay?.date || data.today;
       if (!state.calendarMonth) state.calendarMonth = String(data.today).slice(0, 7);
 
@@ -1632,6 +1697,7 @@ function clientApp() {
       cacheState();
       document.getElementById("feedback").hidden = true;
       renderAll(false);
+      brandIntro.ready();
       return true;
     } catch (error) {
       if (requestId !== state.requestId || error.name === "AbortError") return false;
@@ -1666,6 +1732,7 @@ function clientApp() {
       method: options.method || "GET",
       headers: { Accept: "application/json" },
       cache: "no-store",
+      credentials: "same-origin",
       signal: options.signal,
     };
 
@@ -1680,6 +1747,14 @@ function clientApp() {
       ? await response.json()
       : { error: await response.text() };
 
+    if (response.status === 401 && payload.code === "AUTH_REQUIRED") {
+      state.authExpired = true;
+      state.fresh = false;
+      brandIntro.block();
+      document.getElementById("retryLoad").textContent = "Volver a entrar";
+      updatePendingControls();
+      toast(payload.error, true);
+    }
     if (!response.ok || payload.ok === false) {
       throw new Error(payload.error || "La operación no ha podido completarse.");
     }
@@ -2029,7 +2104,7 @@ function clientApp() {
       '<section class="card"><h2 class="cardTitle">Automatización</h2><p class="cardHint">Activa o pausa los fichajes programados.</p>' +
       '<button class="button ' + (config.active ? "danger" : "primary") + '" style="width:100%" data-action="toggle-active">' +
       (config.active ? "Pausar automatización" : data.automation.ready ? "Activar automatización" : "Configurar oficina") + '</button></section>' +
-      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La bienvenida aparece al abrir, recargar o volver a la web, también en móvil. Con movimiento reducido se muestra una versión breve sin giros. Puedes repetirla aquí.</p>' +
+      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La bienvenida empieza después de iniciar sesión y cargar la aplicación, también en móvil. Se repite al volver a la web. Con movimiento reducido se muestra una versión breve sin giros. Puedes repetirla aquí.</p>' +
       '<button class="button secondary" type="button" data-action="replay-intro">Repetir animación</button></section>' +
       '<section class="card"><h2 class="cardTitle">Diagnóstico</h2>' +
       '<div class="manualList"><div class="manualItem"><div class="manualMain"><strong>Versión</strong><span>' +
@@ -2306,24 +2381,6 @@ async function readJson(request) {
     throw new HttpError(400, "Se esperaba un objeto JSON.");
   }
   return body;
-}
-
-function isAuthorized(request, env) {
-  const header = request.headers.get("Authorization");
-  if (!header || !header.startsWith("Basic ")) return false;
-
-  try {
-    const decoded = atob(header.substring(6));
-    const separator = decoded.indexOf(":");
-    if (separator === -1) return false;
-
-    return (
-      decoded.substring(0, separator) === "admin" &&
-      decoded.substring(separator + 1) === env.ADMIN_PASSWORD
-    );
-  } catch {
-    return false;
-  }
 }
 
 function getMadridParts(date) {

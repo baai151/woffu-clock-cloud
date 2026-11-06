@@ -36,9 +36,10 @@ function classList() {
   };
 }
 
-function setup({ seen = false, reduced = false, storageBlocked = false, hidden = false } = {}) {
+function setup({ reduced = false, hidden = false, access = async () => {}, decode = async () => {} } = {}) {
   const backdrop = { dataset: { src: "/assets/intro-glass-v1.webp" } };
-  const intro = { ...eventTarget(), classList: classList(), hidden: true, querySelector: () => backdrop };
+  const intro = { ...eventTarget(), classList: classList(), hidden: true,
+    querySelector: () => backdrop, querySelectorAll: () => [{ decode }] };
   let document;
   const focusable = () => ({
     focus() { document.activeElement = this; },
@@ -49,146 +50,182 @@ function setup({ seen = false, reduced = false, storageBlocked = false, hidden =
   const nav = focusable();
   const app = { inert: false, querySelector: () => nav };
   const body = { classList: classList() };
-  document = {
-    ...eventTarget(),
-    body,
-    visibilityState: hidden ? "hidden" : "visible",
-    activeElement: body,
-    getElementById: (id) => id === "brandIntro" ? intro : skip,
-    querySelector: () => app,
-  };
+  document = { ...eventTarget(), body, visibilityState: hidden ? "hidden" : "visible", activeElement: body,
+    getElementById: (id) => id === "brandIntro" ? intro : skip, querySelector: () => app };
   const motion = { ...eventTarget(), matches: reduced };
   const window = { ...eventTarget(), matchMedia: () => motion };
-  const storage = new Map(seen ? [["woffu-capgemini-welcome-v2", "seen"]] : []);
   const timers = new Map();
+  const frames = new Map();
+  const messages = [];
+  const accessCalls = [];
   let timerId = 0;
-  const context = vm.createContext({
-    document, window,
-    sessionStorage: {
-      getItem(key) { if (storageBlocked) throw Error("Storage unavailable"); return storage.get(key); },
-      setItem(key, value) { if (storageBlocked) throw Error("Storage unavailable"); storage.set(key, value); },
-    },
+  const context = vm.createContext({ document, window,
+    sessionStorage: { getItem() { throw Error("Storage unavailable"); }, setItem() { throw Error("Storage unavailable"); } },
     setTimeout(fn, ms) { timers.set(++timerId, { fn, ms }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
+    requestAnimationFrame(fn) { frames.set(++timerId, fn); return timerId; },
+    cancelAnimationFrame(id) { frames.delete(id); },
+    api: async (path) => { accessCalls.push(path); return access(); },
+    toast: (message) => messages.push(message),
   });
   vm.runInContext(introCode, context);
-  return {
-    intro, skip, app, backdrop, motion, window, document, timers,
-    play: context.createBrandIntro(),
+  const controller = context.createBrandIntro();
+  return { intro, skip, app, backdrop, motion, window, document, timers, frames, controller, messages, accessCalls,
     finish: () => intro.emit("animationend", { target: intro, animationName: "introAway" }),
     visibility(value) { document.visibilityState = value; document.emit("visibilitychange"); },
+    paint() { const work = [...frames.values()]; frames.clear(); work.forEach((fn) => fn()); },
   };
 }
-
+async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+async function ready(page) { await page.controller.ready(); page.paint(); page.paint(); }
 function assertReleased(page) {
   assert.equal(page.intro.hidden, true);
   assert.equal(page.app.inert, false);
   assert.equal(page.document.body.classList.values.size, 0);
   assert.equal(page.window.listeners.has("keydown"), false);
-  assert.equal(page.motion.listeners.size + page.intro.listeners.size + page.skip.listeners.size + page.timers.size, 0);
+  assert.equal(page.motion.listeners.size + page.intro.listeners.size + page.skip.listeners.size + page.timers.size + page.frames.size, 0);
 }
 
-test("every opening plays even with an old session flag or unavailable storage", () => {
-  for (const options of [{}, { seen: true }, { storageBlocked: true }]) {
-    const page = setup(options);
-    page.play();
-    assert.equal(page.intro.hidden, false);
-    assert.equal(page.app.inert, true);
-    assert.equal(page.backdrop.src, page.backdrop.dataset.src);
-    assert.equal(page.document.activeElement, page.skip);
-    page.finish();
-    assertReleased(page);
-    page.play();
-    assert.equal(page.intro.hidden, false);
-    page.finish();
-    assertReleased(page);
-  }
+test("welcome waits for authenticated bootstrap, loaded logos and visible frames", async () => {
+  let decode;
+  const page = setup({ decode: () => new Promise((resolve) => { decode = resolve; }) });
+  page.window.emit("pageshow", { persisted: false });
+  page.window.emit("focus");
+  await settle();
+  assertReleased(page);
+  assert.equal(page.accessCalls.length, 0);
+  const opening = page.controller.ready();
+  await settle();
+  assert.equal(page.intro.hidden, true);
+  assert.equal(page.backdrop.src, undefined);
+  decode();
+  await opening;
+  assert.equal(page.intro.hidden, false);
+  assert.equal(page.intro.classList.values.has("introPlaying"), false);
+  page.paint();
+  assert.equal(page.intro.classList.values.has("introPlaying"), false);
+  page.paint();
+  assert.equal(page.intro.classList.values.has("introPlaying"), true);
+  assert.equal([...page.timers.values()][0].ms, 3800);
+  page.finish();
+  assertReleased(page);
 });
 
-test("duplicate opening events do not restart the intro or leak timers", () => {
+test("later data loads and duplicate lifecycle events do not replay a completed welcome", async () => {
   const page = setup();
-  page.play();
+  await ready(page);
   const firstTimer = [...page.timers.keys()][0];
-  page.play();
+  await page.controller.ready();
   page.visibility("visible");
   page.window.emit("pageshow", { persisted: true });
+  await settle();
   assert.deepEqual([...page.timers.keys()], [firstTimer]);
   page.finish();
+  await page.controller.ready();
+  page.window.emit("focus");
   page.window.emit("pageshow", { persisted: false });
+  await settle();
   assertReleased(page);
 });
 
-test("a background load waits until visible and returning replays from the start", () => {
+test("a background load waits, then checks access and plays when it becomes visible", async () => {
   const page = setup({ hidden: true });
-  page.play();
+  await ready(page);
   assertReleased(page);
-  assert.equal(page.backdrop.src, undefined);
   page.visibility("visible");
+  await settle();
   assert.equal(page.intro.hidden, false);
+  assert.deepEqual(page.accessCalls, ["/api/session"]);
   page.visibility("hidden");
   assertReleased(page);
   page.visibility("visible");
+  await settle();
   assert.equal(page.intro.hidden, false);
-  page.finish();
-  page.visibility("hidden");
-  page.visibility("visible");
-  assert.equal(page.intro.hidden, false);
+  page.paint(); page.paint();
   assert.equal(page.timers.size, 1);
 });
 
-test("back-forward cache restoration replays, including when visibility arrives later", () => {
-  for (const hiddenOnRestore of [false, true]) {
-    const page = setup();
-    page.play();
-    page.window.emit("pagehide");
-    assertReleased(page);
-    page.document.visibilityState = hiddenOnRestore ? "hidden" : "visible";
-    page.window.emit("pageshow", { persisted: true });
-    assert.equal(page.intro.hidden, hiddenOnRestore);
-    page.visibility("visible");
-    assert.equal(page.intro.hidden, false);
-    assert.equal(page.timers.size, 1);
-    page.finish();
+test("back-forward restoration rechecks access before showing the welcome", async () => {
+  let grant;
+  const page = setup({ access: () => new Promise((resolve) => { grant = resolve; }) });
+  await ready(page);
+  page.window.emit("pagehide");
+  assertReleased(page);
+  page.window.emit("pageshow", { persisted: true });
+  await settle();
+  assert.equal(page.intro.hidden, true);
+  page.window.emit("focus");
+  assert.equal(page.accessCalls.length, 1);
+  grant();
+  await settle();
+  assert.equal(page.intro.hidden, false);
+});
+
+test("failed access and hidden or cancelled pending loads cannot start the intro", async () => {
+  const denied = setup({ access: async () => { throw Error("Session expired"); } });
+  await ready(denied);
+  denied.window.emit("pagehide");
+  denied.window.emit("pageshow");
+  await settle();
+  assertReleased(denied);
+  assert.deepEqual(denied.messages, ["Session expired"]);
+  for (const cancel of [page => page.visibility("hidden"), page => page.controller.block()]) {
+    let decode;
+    const page = setup({ decode: () => new Promise((resolve) => { decode = resolve; }) });
+    const opening = page.controller.ready();
+    await settle();
+    cancel(page);
+    decode();
+    await opening;
     assertReleased(page);
   }
 });
 
-test("reduced motion shows a brief static welcome and releases the application", () => {
+test("slow or failed images never prevent entry", async () => {
+  for (const fail of [true, false]) {
+    const page = setup({ decode: () => fail ? Promise.reject(Error("Image failed")) : new Promise(() => {}) });
+    const opening = page.controller.ready();
+    await settle();
+    if (!fail) [...page.timers.values()].find(timer => timer.ms === 1500).fn();
+    await opening;
+    page.paint(); page.paint();
+    assert.equal(page.intro.hidden, false);
+    [...page.timers.values()][0].fn();
+    assertReleased(page);
+  }
+});
+
+test("reduced motion keeps a short static welcome after authentication", async () => {
   const page = setup({ reduced: true });
-  page.play();
+  await ready(page);
   assert.equal(page.intro.hidden, false);
   assert.equal(page.intro.classList.values.has("introReduced"), true);
   const timer = [...page.timers.values()][0];
   assert.equal(timer.ms, 1200);
   timer.fn();
   assertReleased(page);
-  page.motion.matches = false;
-  page.play({ replay: true });
-  assert.equal(page.intro.classList.values.has("introReduced"), false);
-  assert.equal([...page.timers.values()][0].ms, 3800);
 });
 
-test("escape, skip button, motion change and timeout release the modal", () => {
-  for (const reason of ["escape", "button", "motion", "timeout"]) {
+test("escape, skip, motion changes and stalled frames always release the interface", async () => {
+  for (const reason of ["escape", "button", "motion", "timeout", "frames"]) {
     const page = setup();
-    page.play();
+    await page.controller.ready();
+    if (reason !== "frames") { page.paint(); page.paint(); }
     if (reason === "escape") page.window.emit("keydown", { key: "Escape", preventDefault() {}, stopPropagation() {} });
     if (reason === "button") page.skip.emit("click");
     if (reason === "motion") page.motion.emit("change");
-    if (reason === "timeout") {
-      const timer = [...page.timers.values()][0];
-      assert.equal(timer.ms, 3800);
-      timer.fn();
-    }
+    if (["timeout", "frames"].includes(reason)) [...page.timers.values()][0].fn();
     assertReleased(page);
   }
 });
 
-test("explicit replay traps Tab, ignores child animations and restores focus", () => {
-  const page = setup({ seen: true });
+test("explicit replay traps Tab, ignores child animations and restores focus", async () => {
+  const page = setup();
+  await ready(page); page.finish();
   const trigger = { focus() { page.document.activeElement = this; }, getClientRects() { return [{}]; } };
   page.document.activeElement = trigger;
-  page.play({ replay: true });
+  await page.controller.replay();
+  assert.deepEqual(page.accessCalls, ["/api/session"]);
   let prevented = false;
   page.window.emit("keydown", { key: "Tab", preventDefault() { prevented = true; } });
   assert.equal(prevented, true);
@@ -197,7 +234,5 @@ test("explicit replay traps Tab, ignores child animations and restores focus", (
   assert.equal(page.intro.hidden, false);
   page.finish();
   assert.equal(page.document.activeElement, trigger);
-  page.play({ replay: true });
-  assert.equal(page.intro.hidden, false);
-  assert.equal(page.timers.size, 1);
+  assertReleased(page);
 });

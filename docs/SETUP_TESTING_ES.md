@@ -505,7 +505,7 @@ Empieza por la fila que coincide con lo que ves:
 | Sigo viendo **Hello World** | Solo está publicado el Worker básico. Comprueba el build del repositorio del paso 6.5 y que sea el despliegue activo. |
 | Error relacionado con `DB` | Sigue el apartado 7: debe existir una conexión D1 llamada exactamente `DB` y tener tu base seleccionada. |
 | La base existe, pero no veo tablas | Abre tu web e identifícate; la aplicación las prepara al cargar. No ejecutes SQL para inventarlas. |
-| Me pide la contraseña una y otra vez | Usa `admin` y la contraseña guardada en `ADMIN_PASSWORD`. Si el navegador recuerda una incorrecta, prueba una ventana privada. |
+| Me pide la contraseña una y otra vez | Actualiza tu fork y recarga la web. Usa `admin` y la contraseña guardada en `ADMIN_PASSWORD`. Tras entrar, se mantiene una sesión de hasta 12 horas. Si caduca, pulsa **Volver a entrar**. Si el navegador recuerda una contraseña incorrecta, prueba una ventana privada. |
 | `/health` dice `woffuCredentialsConfigured: false` | Falta o está vacío `WOFFU_EMAIL` o `WOFFU_PASSWORD` en las variables del Worker. Corrige y despliega. |
 | `/api/woffu/test` falla | Comprueba tus credenciales en Woffu. Si tu organización solo permite SSO o restringe este acceso, consulta a su administrador. No pases a LIVE para intentar arreglarlo. |
 | La web muestra **Configurar**, **Pendiente** u **Oficina pendiente** | Elige y guarda la oficina. Si el aviso es de un año sin calendario verificado, hace falta una actualización del calendario. |

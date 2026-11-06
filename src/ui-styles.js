@@ -9,6 +9,7 @@ export default String.raw`
 /* A cinematic entrance on each opening. All moving layers animate transform/opacity only. */
 .introActive{overflow:hidden}
 .brandIntro{position:fixed;inset:0;z-index:100;background:#04142d;overflow:hidden;isolation:isolate;color:#fff;animation:introAway 300ms cubic-bezier(.4,0,1,1) 3150ms both}
+.brandIntro:not(.introPlaying),.brandIntro:not(.introPlaying) *{animation-play-state:paused}
 .introVisual{position:absolute;inset:0;pointer-events:none}
 .introBackdrop{position:absolute;inset:-10%;width:120%;height:120%;object-fit:cover;object-position:center;animation:introCamera 3450ms cubic-bezier(.22,.61,.36,1) both;will-change:transform,opacity}
 .introStage{position:absolute;inset:0;display:grid;place-items:center;perspective:850px;perspective-origin:50% 46%}
