@@ -26,9 +26,13 @@ jobs:
           node --check src/index-v8.js
           node --check src/index-v9.js
           node --check src/index-v10.js
+          node --check src/index-v11.js
 
       - name: Install dependencies
         run: npm install
+
+      - name: Test schedules, vacations and scheduler
+        run: npm test
 
       - name: Check Wrangler version
         run: npx wrangler --version

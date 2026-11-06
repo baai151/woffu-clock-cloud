@@ -1,9 +1,9 @@
 import app from "./index-v7.js";
+import { prepareScheduledDay, getPunchBlockReason } from "./index-v5.js";
 
-const APP_VERSION = "3.4.0-weekly-compensation";
+const APP_VERSION = "3.6.0-capgemini";
 const WOFFU_BASE_URL = "https://app.woffu.com";
 const TIMEZONE = "Europe/Madrid";
-const DAILY_TARGET_SECONDS = 8 * 60 * 60;
 const RECOVERY_WINDOW_SECONDS = 10 * 60;
 const SAFE_CLAIM_STALE_SECONDS = 70;
 const MAX_EVENT_ATTEMPTS = 5;
@@ -18,6 +18,16 @@ const EVENTS = [
 ];
 
 let liveSchemaPromise;
+
+// Recheck configuration and exclusions atomically at both write boundaries.
+// Bindings: day, event, planned time, office, event order; optional extra at ?6.
+const SCHEDULE_GUARD_SQL = `
+  EXISTS (SELECT 1 FROM config WHERE id = 1 AND active = 1 AND office = ?4)
+  AND EXISTS (SELECT 1 FROM test_plan WHERE day = ?1 AND event = ?2 AND planned_time = ?3)
+  AND NOT EXISTS (SELECT 1 FROM vacations WHERE date = ?1)
+  AND NOT EXISTS (SELECT 1 FROM manual_events WHERE day = ?1 AND event = ?2)
+  AND NOT EXISTS (SELECT 1 FROM day_pauses WHERE day = ?1 AND paused_from_order <= ?5)
+`;
 
 export default {
   async fetch(request, env, ctx) {
@@ -57,7 +67,7 @@ export default {
       String(env.WOFFU_WRITE_ENABLED || "false").toLowerCase() === "true";
 
     if (mode !== "LIVE" || !writeEnabled) {
-      return app.scheduled(controller, env, ctx);
+      return app.scheduled(controller, { ...env, MODE: "TEST" }, ctx);
     }
 
     ctx.waitUntil(runLiveScheduler(controller, env));
@@ -72,7 +82,10 @@ async function runLiveScheduler(controller, env) {
     const local = getMadridParts(actualNow);
     if (local.weekday === 0 || local.weekday === 6) return;
 
-    const baseReady = await ensureBasePlan(controller, env, local.date);
+    const baseReady = await d1Read(
+      () => prepareScheduledDay(env, actualNow),
+      "prepare configured workday"
+    );
     if (!baseReady) return;
 
     const weekStart = getWeekStart(local.date);
@@ -167,57 +180,6 @@ function ensureLiveSchema(env) {
   return liveSchemaPromise;
 }
 
-async function ensureBasePlan(controller, env, day) {
-  let config;
-
-  try {
-    config = await d1Read(
-      () => env.DB.prepare(`SELECT active FROM config WHERE id = 1`).first(),
-      "config lookup"
-    );
-  } catch (error) {
-    if (!isMissingTableError(error)) throw error;
-    await prepareThroughLegacyTestScheduler(controller, env);
-    config = await d1Read(
-      () => env.DB.prepare(`SELECT active FROM config WHERE id = 1`).first(),
-      "config lookup after initialization"
-    );
-  }
-
-  if (!config || !Boolean(config.active)) return false;
-
-  const weekStart = getWeekStart(day);
-  const weekMeta = await d1Read(
-    () =>
-      env.DB.prepare(`
-        SELECT week_start
-        FROM test_week_meta
-        WHERE week_start = ?1
-      `).bind(weekStart).first(),
-    "weekly plan lookup"
-  );
-
-  if (!weekMeta) {
-    await prepareThroughLegacyTestScheduler(controller, env);
-  }
-
-  return true;
-}
-
-async function prepareThroughLegacyTestScheduler(controller, env) {
-  console.log("[LIVE-SCHEDULED] preparing missing weekly plan once");
-
-  let preparationPromise = Promise.resolve();
-  const preparationCtx = {
-    waitUntil(promise) {
-      preparationPromise = Promise.resolve(promise);
-    },
-  };
-
-  await app.scheduled(controller, { ...env, MODE: "TEST" }, preparationCtx);
-  await preparationPromise;
-}
-
 async function ensureWeeklyTarget(env, weekStart) {
   const meta = await d1Read(
     () =>
@@ -241,7 +203,11 @@ async function ensureWeeklyTarget(env, weekStart) {
   );
 
   const workdays = Number(meta.workdays || 0);
-  const baseTarget = workdays * DAILY_TARGET_SECONDS;
+  const config = await d1Read(
+    () => env.DB.prepare("SELECT daily_hours FROM config WHERE id = 1").first(),
+    "daily target"
+  );
+  const baseTarget = workdays * Number(config?.daily_hours || 8) * 3600;
   const maxExtra = workdays * 60;
 
   if (!control) {
@@ -252,7 +218,7 @@ async function ensureWeeklyTarget(env, weekStart) {
       () =>
         env.DB.batch([
           env.DB.prepare(`
-            INSERT INTO live_week_control (
+            INSERT OR IGNORE INTO live_week_control (
               week_start, source_generated_at, workdays,
               base_target_seconds, target_extra_seconds, target_seconds,
               needs_rebalance, rebalance_after_day, unresolved_seconds
@@ -267,9 +233,9 @@ async function ensureWeeklyTarget(env, weekStart) {
           ),
           env.DB.prepare(`
             UPDATE test_week_meta
-            SET target_seconds = ?2
+            SET target_seconds = (SELECT target_seconds FROM live_week_control WHERE week_start = ?1)
             WHERE week_start = ?1
-          `).bind(weekStart, target),
+          `).bind(weekStart),
         ]),
       "create random weekly target"
     );
@@ -292,7 +258,9 @@ async function ensureWeeklyTarget(env, weekStart) {
     String(control.source_generated_at || "") !== String(meta.generated_at || "");
   const workdaysChanged = Number(control.workdays) !== workdays;
 
-  if (sourceChanged || workdaysChanged) {
+  const baseTargetChanged = Number(control.base_target_seconds) !== baseTarget;
+
+  if (sourceChanged || workdaysChanged || baseTargetChanged) {
     const previousExtra = Number(control.target_extra_seconds || 0);
     const extra = Math.min(previousExtra, maxExtra);
     const target = baseTarget + extra;
@@ -518,7 +486,7 @@ async function processScheduledEvent(env, input) {
     return;
   }
 
-  const postingReady = await transitionToPosting(env, day, event);
+  const postingReady = await transitionToPosting(env, day, event, scheduledTime);
   if (!postingReady) return;
 
   const effectiveTime = claim.recovery
@@ -621,14 +589,19 @@ async function processScheduledEvent(env, input) {
 }
 
 async function acquireSafeClaim(env, day, event, scheduledTime, existing) {
+  const office = await eligibleOffice(env, day);
+  const order = EVENTS.find((item) => item.event === event)?.order;
+  if (!office || !order) return { claimed: false, recovery: false };
+
   if (!existing) {
     const result = await d1Write(
       () =>
         env.DB.prepare(`
           INSERT OR IGNORE INTO punch_log (
             day, event, scheduled_time, status, attempts, executed_at, error
-          ) VALUES (?1, ?2, ?3, 'PENDING_SAFE', 1, CURRENT_TIMESTAMP, NULL)
-        `).bind(day, event, scheduledTime).run(),
+          ) SELECT ?1, ?2, ?3, 'PENDING_SAFE', 1, CURRENT_TIMESTAMP, NULL
+          WHERE ${SCHEDULE_GUARD_SQL}
+        `).bind(day, event, scheduledTime, office, order).run(),
       `${event} initial claim`
     );
     return {
@@ -643,6 +616,7 @@ async function acquireSafeClaim(env, day, event, scheduledTime, existing) {
         env.DB.prepare(`
           UPDATE punch_log
           SET attempts = attempts + 1,
+              scheduled_time = ?3,
               executed_at = CURRENT_TIMESTAMP,
               error = NULL
           WHERE day = ?1
@@ -650,9 +624,10 @@ async function acquireSafeClaim(env, day, event, scheduledTime, existing) {
             AND status = 'PENDING_SAFE'
             AND (
               executed_at IS NULL OR
-              datetime(executed_at) <= datetime('now', ?3)
+              datetime(executed_at) <= datetime('now', ?6)
             )
-        `).bind(day, event, `-${SAFE_CLAIM_STALE_SECONDS} seconds`).run(),
+            AND ${SCHEDULE_GUARD_SQL}
+        `).bind(day, event, scheduledTime, office, order, `-${SAFE_CLAIM_STALE_SECONDS} seconds`).run(),
       `${event} stale safe claim recovery`
     );
     return {
@@ -673,8 +648,9 @@ async function acquireSafeClaim(env, day, event, scheduledTime, existing) {
               error = NULL
           WHERE day = ?1
             AND event = ?2
-            AND status = ?4
-        `).bind(day, event, scheduledTime, existing.status).run(),
+            AND status = ?6
+            AND ${SCHEDULE_GUARD_SQL}
+        `).bind(day, event, scheduledTime, office, order, existing.status).run(),
       `${event} retry claim`
     );
     return {
@@ -686,8 +662,21 @@ async function acquireSafeClaim(env, day, event, scheduledTime, existing) {
   return { claimed: false, recovery: false };
 }
 
-async function transitionToPosting(env, day, event) {
+async function eligibleOffice(env, day) {
+  const config = await d1Read(
+    () => env.DB.prepare("SELECT active, office FROM config WHERE id = 1").first(),
+    "current office and activation"
+  );
+  if (!config?.active || !config.office) return null;
+  if (await d1Read(() => getPunchBlockReason(env, day), "current day exclusions")) return null;
+  return config.office;
+}
+
+async function transitionToPosting(env, day, event, scheduledTime) {
   try {
+    const office = await eligibleOffice(env, day);
+    const order = EVENTS.find((item) => item.event === event)?.order;
+    if (!office || !order) return false;
     const result = await d1Write(
       () =>
         env.DB.prepare(`
@@ -698,22 +687,14 @@ async function transitionToPosting(env, day, event) {
           WHERE day = ?1
             AND event = ?2
             AND status = 'PENDING_SAFE'
-        `).bind(day, event).run(),
+            AND scheduled_time = ?3
+            AND ${SCHEDULE_GUARD_SQL}
+        `).bind(day, event, scheduledTime, office, order).run(),
       `${event} posting boundary`
     );
 
-    if (Number(result?.meta?.changes ?? 0) > 0) return true;
-
-    const current = await d1Read(
-      () =>
-        env.DB.prepare(`
-          SELECT status
-          FROM punch_log
-          WHERE day = ?1 AND event = ?2
-        `).bind(day, event).first(),
-      `${event} posting verification`
-    );
-    return current?.status === "POSTING";
+    // A pre-existing/uncertain POSTING state is not permission to send again.
+    return Number(result?.meta?.changes ?? 0) > 0;
   } catch (error) {
     console.error(
       `[LIVE-SCHEDULED] ${event} D1_POSTING_BOUNDARY_FAILED_SAFE`,
@@ -835,12 +816,12 @@ async function rebalanceWeek(env, weekStart, afterDay) {
       () =>
         env.DB.prepare(`
           UPDATE test_plan
-          SET planned_time = ?4,
-              offset_seconds = ?5
+          SET planned_time = ?3,
+              offset_seconds = ?4
           WHERE week_start = ?1
             AND day = ?2
             AND event = 'EXIT_PM'
-        `).bind(weekStart, adjustment.day, "EXIT_PM", newExit, newOffset).run(),
+        `).bind(weekStart, adjustment.day, newExit, newOffset).run(),
       `rebalance ${adjustment.day}`
     );
 
@@ -939,6 +920,11 @@ async function refreshDaySummary(env, weekStart, day) {
   );
   if (!EVENTS.every((item) => times[item.event])) return;
 
+  const config = await d1Read(
+    () => env.DB.prepare("SELECT daily_hours FROM config WHERE id = 1").first(),
+    "day summary target"
+  );
+  const dailyTarget = Number(config?.daily_hours || 8) * 3600;
   const worked =
     timeToSeconds(times.LUNCH_OUT) - timeToSeconds(times.ENTRY_AM) +
     timeToSeconds(times.EXIT_PM) - timeToSeconds(times.LUNCH_IN);
@@ -950,7 +936,7 @@ async function refreshDaySummary(env, weekStart, day) {
         SET worked_seconds = ?3,
             deviation_seconds = ?4
         WHERE week_start = ?1 AND day = ?2
-      `).bind(weekStart, day, worked, worked - DAILY_TARGET_SECONDS).run(),
+      `).bind(weekStart, day, worked, worked - dailyTarget).run(),
     "day summary refresh"
   );
 }
@@ -1192,12 +1178,6 @@ function isRetryableD1Error(error) {
     message.includes("reset because its code was updated") ||
     message.includes("transient issue on remote node")
   );
-}
-
-function isMissingTableError(error) {
-  return String(error instanceof Error ? error.message : error)
-    .toLowerCase()
-    .includes("no such table");
 }
 
 function hasAllEvents(events) {

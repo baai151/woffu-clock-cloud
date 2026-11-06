@@ -1,4 +1,5 @@
 import app from "./index-v6.js";
+import { getPunchBlockReason } from "./index-v5.js";
 
 const APP_VERSION = "3.2.0-woffu-manual-punch";
 const WOFFU_BASE_URL = "https://app.woffu.com";
@@ -33,25 +34,25 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/api/woffu/punch-now") {
       if (!isAuthorized(request, env)) return unauthorizedResponse();
-      assertSameOrigin(request, url);
-
-      const mode = String(env.MODE || "TEST").toUpperCase();
-      const writeEnabled =
-        String(env.WOFFU_WRITE_ENABLED || "false").toLowerCase() === "true";
-
-      if (mode !== "LIVE" || !writeEnabled) {
-        return jsonResponse(
-          {
-            ok: false,
-            version: APP_VERSION,
-            error:
-              "Escritura real desactivada. Se requiere MODE=LIVE y WOFFU_WRITE_ENABLED=true.",
-          },
-          409
-        );
-      }
-
       try {
+        assertSameOrigin(request, url);
+
+        const mode = String(env.MODE || "TEST").toUpperCase();
+        const writeEnabled =
+          String(env.WOFFU_WRITE_ENABLED || "false").toLowerCase() === "true";
+
+        if (mode !== "LIVE" || !writeEnabled) {
+          return jsonResponse(
+            {
+              ok: false,
+              version: APP_VERSION,
+              error:
+                "Escritura real desactivada. Se requiere MODE=LIVE y WOFFU_WRITE_ENABLED=true.",
+            },
+            409
+          );
+        }
+
         const body = await request.json().catch(() => ({}));
         if (body?.confirm !== "PUNCH_NOW") {
           return jsonResponse(
@@ -63,6 +64,8 @@ export default {
           );
         }
 
+        const blocked = await getPunchBlockReason(env);
+        if (blocked) return jsonResponse({ ok: false, error: blocked }, 409);
         const result = await createWoffuPunchNow(env);
         return jsonResponse({
           ok: true,

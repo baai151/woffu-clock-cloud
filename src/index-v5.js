@@ -1,8 +1,12 @@
-const APP_VERSION = "3.0.0-mobile-fast";
+import { OFFICES, HOLIDAY_CALENDAR_VERSION, isOffice, hasHolidayCalendar, getHoliday, getOfficeCalendar } from "./holidays.js";
+import appStyles from "./ui-styles.js";
+import { uiAssetResponse } from "./ui-assets.js";
+
+const APP_VERSION = "3.6.0-capgemini";
 const TIMEZONE = "Europe/Madrid";
 const MAX_OFFSET_SECONDS = 299;
 const MAX_DAILY_DEVIATION_SECONDS = 180;
-const DAILY_TARGET_SECONDS = 8 * 60 * 60;
+const DEFAULT_DAILY_HOURS = 8;
 const MIN_BREAK_SECONDS = 60 * 60;
 
 const EVENTS = [
@@ -17,6 +21,11 @@ let schemaPromise;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname.startsWith("/assets/")) {
+      const asset = uiAssetResponse(url.pathname);
+      if (asset) return asset;
+    }
 
     if (request.method === "GET" && url.pathname === "/health") {
       return jsonResponse({
@@ -56,20 +65,21 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-        return bootstrapResponse(request, env);
+        return await bootstrapResponse(request, env);
       }
 
       if (request.method === "POST") {
         assertSameOrigin(request, url);
 
-        if (url.pathname === "/api/active") return updateActive(request, env);
-        if (url.pathname === "/api/config") return updateConfig(request, env);
-        if (url.pathname === "/api/vacations") return updateVacations(request, env);
-        if (url.pathname === "/api/manual") return upsertManualEvent(request, env);
-        if (url.pathname === "/api/manual/delete") return removeManualEvent(request, env);
-        if (url.pathname === "/api/pause") return upsertDayPause(request, env);
-        if (url.pathname === "/api/pause/clear") return clearDayPause(request, env);
-        if (url.pathname === "/api/regenerate") return regenerateWeek(request, env);
+        if (url.pathname === "/api/active") return await updateActive(request, env);
+        if (url.pathname === "/api/config") return await updateConfig(request, env);
+        if (url.pathname === "/api/office") return await updateOffice(request, env);
+        if (url.pathname === "/api/vacations") return await updateVacations(request, env);
+        if (url.pathname === "/api/manual") return await upsertManualEvent(request, env);
+        if (url.pathname === "/api/manual/delete") return await removeManualEvent(request, env);
+        if (url.pathname === "/api/pause") return await upsertDayPause(request, env);
+        if (url.pathname === "/api/pause/clear") return await clearDayPause(request, env);
+        if (url.pathname === "/api/regenerate") return await regenerateWeek(request, env);
       }
 
       return textResponse("Not found", 404);
@@ -119,6 +129,8 @@ async function ensureSchema(env) {
       CREATE TABLE IF NOT EXISTS config (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         active INTEGER NOT NULL DEFAULT 0,
+        daily_hours INTEGER NOT NULL DEFAULT 8 CHECK (daily_hours IN (6, 8)),
+        office TEXT CHECK (office IN ('barcelona', 'madrid', 'sevilla')),
         entry_am TEXT NOT NULL DEFAULT '09:00',
         lunch_out TEXT NOT NULL DEFAULT '13:00',
         lunch_in TEXT NOT NULL DEFAULT '14:00',
@@ -175,6 +187,7 @@ async function ensureSchema(env) {
         week_start TEXT PRIMARY KEY,
         workdays INTEGER NOT NULL,
         target_seconds INTEGER NOT NULL,
+        calendar_key TEXT NOT NULL DEFAULT '',
         generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `),
@@ -200,11 +213,31 @@ async function ensureSchema(env) {
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_manual_day ON manual_events(day)`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_logs_day ON punch_log(day)`),
   ]);
+
+  // Existing installations keep their eight-hour schedule and saved data.
+  await ensureColumn(env, "config", "daily_hours", "INTEGER NOT NULL DEFAULT 8 CHECK (daily_hours IN (6, 8))");
+  await ensureColumn(env, "config", "office", "TEXT CHECK (office IN ('barcelona', 'madrid', 'sevilla'))");
+  await ensureColumn(env, "test_week_meta", "calendar_key", "TEXT NOT NULL DEFAULT ''");
+}
+
+async function ensureColumn(env, table, name, definition) {
+  const columns = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.results.some((column) => column.name === name)) {
+    try {
+      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
+    } catch (error) {
+      // Another Worker may have applied the same migration concurrently.
+      const currentColumns = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+      if (!currentColumns.results.some((column) => column.name === name)) {
+        throw error;
+      }
+    }
+  }
 }
 
 async function getConfig(env) {
   return env.DB.prepare(`
-    SELECT active, entry_am, lunch_out, lunch_in, exit_pm, updated_at
+    SELECT active, daily_hours, office, entry_am, lunch_out, lunch_in, exit_pm, updated_at
     FROM config
     WHERE id = 1
   `).first();
@@ -311,6 +344,7 @@ async function bootstrapResponse(request, env) {
   ]);
 
   const week = buildWeekState({
+    config,
     weekStart: currentWeekStart,
     meta,
     summaries: summaries.results || [],
@@ -321,6 +355,7 @@ async function bootstrapResponse(request, env) {
   });
 
   const manualState = buildManualDayState({
+    config,
     day: manualDay,
     planRows: manualPlans.results || [],
     manualRows: manualOverrides.results || [],
@@ -334,8 +369,13 @@ async function bootstrapResponse(request, env) {
     mode: String(env.MODE || "TEST").toUpperCase(),
     generatedAt: now.toISOString(),
     today,
+    offices: OFFICES,
+    holidayCalendar: getOfficeCalendar(config.office),
+    automation: { ready: !calendarSetupMessage(config, today), reason: calendarSetupMessage(config, today) },
     config: {
       active: Boolean(config.active),
+      daily_hours: getDailyHours(config),
+      office: config.office || null,
       entry_am: config.entry_am,
       lunch_out: config.lunch_out,
       lunch_in: config.lunch_in,
@@ -358,7 +398,12 @@ async function bootstrapResponse(request, env) {
 
 async function updateActive(request, env) {
   const body = await readJson(request);
-  const active = Boolean(body.active);
+  if (typeof body.active !== "boolean") throw new HttpError(400, "El estado debe ser verdadero o falso.");
+  const active = body.active;
+  if (active) {
+    const reason = calendarSetupMessage(await getConfig(env), getMadridParts(new Date()).date);
+    if (reason) throw new HttpError(409, reason);
+  }
 
   await env.DB.prepare(`
     UPDATE config
@@ -371,7 +416,10 @@ async function updateActive(request, env) {
 
 async function updateConfig(request, env) {
   const body = await readJson(request);
+  const current = await getConfig(env);
+  const dailyHours = getDailyHours({ daily_hours: body.daily_hours ?? current.daily_hours });
   const config = {
+    daily_hours: dailyHours,
     entry_am: normalizeTime(body.entry_am),
     lunch_out: normalizeTime(body.lunch_out),
     lunch_in: normalizeTime(body.lunch_in),
@@ -391,9 +439,10 @@ async function updateConfig(request, env) {
           lunch_out = ?2,
           lunch_in = ?3,
           exit_pm = ?4,
+          daily_hours = ?5,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = 1
-    `).bind(config.entry_am, config.lunch_out, config.lunch_in, config.exit_pm),
+    `).bind(config.entry_am, config.lunch_out, config.lunch_in, config.exit_pm, config.daily_hours),
     env.DB.prepare(`DELETE FROM test_plan`),
     env.DB.prepare(`DELETE FROM test_day_summary`),
     env.DB.prepare(`DELETE FROM test_week_meta`),
@@ -402,12 +451,27 @@ async function updateConfig(request, env) {
   return jsonResponse({ ok: true });
 }
 
+async function updateOffice(request, env) {
+  const { office } = await readJson(request);
+  if (!isOffice(office)) throw new HttpError(400, "Selecciona Barcelona, Madrid o Sevilla.");
+  const current = await getConfig(env);
+  if (current.office !== office) {
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE config SET office = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`).bind(office),
+      env.DB.prepare(`DELETE FROM test_plan`),
+      env.DB.prepare(`DELETE FROM test_day_summary`),
+      env.DB.prepare(`DELETE FROM test_week_meta`),
+    ]);
+  }
+  return jsonResponse({ ok: true, office });
+}
+
 async function updateVacations(request, env) {
   const body = await readJson(request);
-  const selectedDates = Array.from(new Set(Array.isArray(body.dates) ? body.dates : []))
-    .filter(isDateString)
-    .filter(isWeekdayDate)
-    .sort();
+  if (!Array.isArray(body.dates) || body.dates.some((date) => !isDateString(date) || !isWeekdayDate(date))) {
+    throw new HttpError(400, "Las vacaciones deben contener fechas laborables válidas.");
+  }
+  const selectedDates = Array.from(new Set(body.dates)).sort();
 
   const existingRows = await env.DB.prepare(`SELECT date FROM vacations`).all();
   const existingDates = (existingRows.results || []).map((row) => row.date);
@@ -440,18 +504,20 @@ async function upsertManualEvent(request, env) {
   const day = String(body.day || "");
   const event = String(body.event || "");
   const manualTime = normalizeTimeWithSeconds(body.manual_time);
+  const config = await getConfig(env);
   const definition = EVENTS.find((item) => item.event === event);
 
   if (!isDateString(day)) throw new HttpError(400, "Fecha inválida.");
   if (!isWeekdayDate(day)) throw new HttpError(400, "Solo se admiten días laborables.");
   if (!definition) throw new HttpError(400, "Evento inválido.");
   if (!manualTime) throw new HttpError(400, "Hora manual inválida.");
+  const calendarReason = configuredDayBlockReason(config, day);
+  if (calendarReason) throw new HttpError(400, calendarReason);
   if (await isVacation(env, day)) {
     throw new HttpError(400, "El día está marcado como vacaciones.");
   }
 
   const weekStart = getWeekStart(day);
-  const config = await getConfig(env);
   await ensureWeekPlan(env, weekStart, config);
 
   const effective = await getEffectiveDayTimes(env, weekStart, day, {
@@ -497,6 +563,8 @@ async function upsertDayPause(request, env) {
     throw new HttpError(400, "Datos de pausa inválidos.");
   }
   if (!isWeekdayDate(day)) throw new HttpError(400, "Solo se admiten días laborables.");
+  const calendarReason = configuredDayBlockReason(await getConfig(env), day);
+  if (calendarReason) throw new HttpError(400, calendarReason);
   if (await isVacation(env, day)) {
     throw new HttpError(400, "El día está marcado como vacaciones.");
   }
@@ -535,18 +603,36 @@ async function regenerateWeek(request, env) {
 // ==================================================
 
 async function ensureWeekPlan(env, weekStart, config = null) {
+  config ||= await getConfig(env);
   const existing = await env.DB.prepare(`
-    SELECT week_start FROM test_week_meta WHERE week_start = ?1
+    SELECT calendar_key, workdays FROM test_week_meta WHERE week_start = ?1
   `).bind(weekStart).first();
 
-  if (!existing) {
-    await generateWeekPlan(env, weekStart, config || (await getConfig(env)));
+  if (existing && !existing.calendar_key && !config.office) {
+    const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM test_plan WHERE week_start = ?1")
+      .bind(weekStart).first();
+    if (Number(count.total) === Number(existing.workdays) * EVENTS.length) {
+      // Adopt an intact legacy plan without randomizing recorded production days.
+      await env.DB.prepare("UPDATE test_week_meta SET calendar_key = ?2 WHERE week_start = ?1 AND calendar_key = ''")
+        .bind(weekStart, calendarKey(config)).run();
+      return;
+    }
   }
+
+  if (!existing || existing.calendar_key !== calendarKey(config)) {
+    await generateWeekPlan(env, weekStart, config);
+  }
+}
+
+function calendarKey(config) {
+  return JSON.stringify([HOLIDAY_CALENDAR_VERSION, config.office || null, getDailyHours(config),
+    ...EVENTS.map(({ field }) => config[field])]);
 }
 
 async function generateWeekPlan(env, weekStart, config) {
   if (!config) throw new HttpError(500, "No se ha encontrado la configuración.");
   validateBaseSchedule(config);
+  const dailyTargetSeconds = getDailyHours(config) * 3600;
 
   const weekdays = Array.from({ length: 5 }, (_, index) =>
     addDays(weekStart, index)
@@ -560,7 +646,7 @@ async function generateWeekPlan(env, weekStart, config) {
   const vacationSet = new Set(
     (vacationRows.results || []).map((row) => row.date)
   );
-  const workDates = weekdays.filter((date) => !vacationSet.has(date));
+  const workDates = weekdays.filter((date) => !vacationSet.has(date) && !configuredDayBlockReason(config, date));
   const deviations = generateDailyDeviations(workDates.length);
 
   const base = {
@@ -582,24 +668,15 @@ async function generateWeekPlan(env, weekStart, config) {
     const day = workDates[index];
     const deviation = deviations[index];
     const offsets = generateOffsetsForDeviation(base, deviation);
-    const planned = {
-      ENTRY_AM: addSecondsToTime(base.ENTRY_AM, offsets.ENTRY_AM),
-      LUNCH_OUT: addSecondsToTime(base.LUNCH_OUT, offsets.LUNCH_OUT),
-      LUNCH_IN: addSecondsToTime(base.LUNCH_IN, offsets.LUNCH_IN),
-      EXIT_PM: addSecondsToTime(base.EXIT_PM, offsets.EXIT_PM),
-    };
+    const planned = Object.fromEntries(EVENTS.map(({ event }) => [
+      event, addSecondsToTime(base[event], offsets[event]),
+    ]));
 
-    const actualBreak =
-      timeToSeconds(planned.LUNCH_IN) - timeToSeconds(planned.LUNCH_OUT);
-    if (actualBreak < MIN_BREAK_SECONDS) {
-      throw new Error("El generador ha producido un descanso inferior a una hora.");
-    }
+    const validationError = validateEffectiveTimes(planned);
+    if (validationError) throw new Error(validationError);
+    const workedSeconds = calculateWorkedSeconds(planned);
 
-    const workedSeconds =
-      timeToSeconds(planned.LUNCH_OUT) - timeToSeconds(planned.ENTRY_AM) +
-      timeToSeconds(planned.EXIT_PM) - timeToSeconds(planned.LUNCH_IN);
-
-    if (workedSeconds !== DAILY_TARGET_SECONDS + deviation) {
+    if (workedSeconds !== dailyTargetSeconds + deviation) {
       throw new Error("El total diario generado no coincide con su desviación.");
     }
 
@@ -631,7 +708,7 @@ async function generateWeekPlan(env, weekStart, config) {
     );
   }
 
-  const targetSeconds = workDates.length * DAILY_TARGET_SECONDS;
+  const targetSeconds = workDates.length * dailyTargetSeconds;
   if (weeklySeconds !== targetSeconds) {
     throw new Error(
       `El total semanal generado (${weeklySeconds}) no coincide con el objetivo (${targetSeconds}).`
@@ -641,9 +718,9 @@ async function generateWeekPlan(env, weekStart, config) {
   statements.push(
     env.DB.prepare(`
       INSERT INTO test_week_meta (
-        week_start, workdays, target_seconds
-      ) VALUES (?1, ?2, ?3)
-    `).bind(weekStart, workDates.length, targetSeconds)
+        week_start, workdays, target_seconds, calendar_key
+      ) VALUES (?1, ?2, ?3, ?4)
+    `).bind(weekStart, workDates.length, targetSeconds, calendarKey(config))
   );
 
   await env.DB.batch(statements);
@@ -684,6 +761,8 @@ function generateDailyDeviations(workdays) {
 }
 
 function generateOffsetsForDeviation(base, targetDeviation) {
+  const baseEntry = timeToSeconds(base.ENTRY_AM);
+  const baseExit = timeToSeconds(base.EXIT_PM);
   const baseLunchOut = timeToSeconds(base.LUNCH_OUT);
   const baseLunchIn = timeToSeconds(base.LUNCH_IN);
 
@@ -698,6 +777,8 @@ function generateOffsetsForDeviation(base, targetDeviation) {
     const actualBreak =
       baseLunchIn + lunchIn - (baseLunchOut + lunchOut);
     if (actualBreak < MIN_BREAK_SECONDS) continue;
+    if (baseEntry + entryAM >= baseLunchOut + lunchOut) continue;
+    if (baseLunchIn + lunchIn >= baseExit + exitPM) continue;
 
     return {
       ENTRY_AM: entryAM,
@@ -717,6 +798,7 @@ function generateOffsetsForDeviation(base, targetDeviation) {
 // ==================================================
 
 function buildWeekState({
+  config,
   weekStart,
   meta,
   summaries,
@@ -749,19 +831,24 @@ function buildWeekState({
   const days = Array.from({ length: 5 }, (_, index) => {
     const date = addDays(weekStart, index);
     const vacation = vacationSet.has(date);
+    const holiday = getHoliday(config.office, date);
+    const calendarMissing = Boolean(config.office) && !hasHolidayCalendar(config.office, date.slice(0, 4));
 
-    if (vacation) {
+    if (vacation || holiday || calendarMissing) {
+      if (calendarMissing) complete = false;
       return {
         date,
         label: weekdayName(date),
-        vacation: true,
+        vacation: vacation && !holiday,
+        holiday,
+        calendarMissing,
         plan: {},
         manual: {},
         pauseFromOrder: null,
         baseSeconds: 0,
         deviationSeconds: 0,
         effectiveSeconds: 0,
-        effectiveComplete: true,
+        effectiveComplete: !calendarMissing,
       };
     }
 
@@ -800,6 +887,8 @@ function buildWeekState({
       date,
       label: weekdayName(date),
       vacation: false,
+      holiday: null,
+      calendarMissing: false,
       plan,
       manual,
       pauseFromOrder,
@@ -810,7 +899,7 @@ function buildWeekState({
     };
   });
 
-  const targetSeconds = Number(meta?.target_seconds || 0);
+  const targetSeconds = days.some((day) => day.calendarMissing) ? null : Number(meta?.target_seconds || 0);
 
   return {
     start: weekStart,
@@ -825,6 +914,7 @@ function buildWeekState({
 }
 
 function buildManualDayState({
+  config,
   day,
   planRows,
   manualRows,
@@ -839,20 +929,31 @@ function buildManualDayState({
   );
   const effective = { ...plan, ...manual };
   const validationError = validateEffectiveTimes(effective);
-  const complete = !validationError && hasAllEvents(effective);
+  const vacation = vacationDates.has(day);
+  const holiday = getHoliday(config.office, day);
+  const calendarMissing = Boolean(config.office) && !hasHolidayCalendar(config.office, day.slice(0, 4));
+  const workday = isWeekdayDate(day);
+  const pauseFromOrder = pause ? Number(pause.paused_from_order) : null;
+  const missingManual = EVENTS.some(({ event, order }) =>
+    pauseFromOrder && order >= pauseFromOrder && !manual[event]
+  );
+  const complete = workday && !vacation && !holiday && !calendarMissing && !missingManual && !validationError && hasAllEvents(effective);
 
   return {
     date: day,
-    vacation: vacationDates.has(day),
+    vacation,
+    holiday,
+    calendarMissing,
+    workday,
     plan,
     manual,
     effective,
-    pauseFromOrder: pause ? Number(pause.paused_from_order) : null,
+    pauseFromOrder,
     complete,
     error: validationError,
     workedSeconds: complete ? calculateWorkedSeconds(effective) : null,
     adjustmentSeconds: complete
-      ? calculateWorkedSeconds(effective) - DAILY_TARGET_SECONDS
+      ? calculateWorkedSeconds(effective) - getDailyHours(config) * 3600
       : null,
   };
 }
@@ -876,25 +977,30 @@ async function getEffectiveDayTimes(env, weekStart, day, overrides = {}) {
   return result;
 }
 
+function getDailyHours(config) {
+  const hours = Number(config.daily_hours ?? DEFAULT_DAILY_HOURS);
+  if (hours !== 6 && hours !== 8) {
+    throw new HttpError(400, "La jornada debe ser de 6 u 8 horas.");
+  }
+  return hours;
+}
+
 function validateBaseSchedule(config) {
-  const entry = timeToSeconds(config.entry_am);
-  const lunchOut = timeToSeconds(config.lunch_out);
-  const lunchIn = timeToSeconds(config.lunch_in);
-  const exit = timeToSeconds(config.exit_pm);
+  const targetSeconds = getDailyHours(config) * 3600;
+  const times = Object.fromEntries(EVENTS.map(({ event, field }) => [event, config[field]]));
+  const validationError = validateEffectiveTimes(times);
+  if (validationError) throw new HttpError(400, validationError);
 
-  if (!(entry < lunchOut && lunchOut < lunchIn && lunchIn < exit)) {
-    throw new HttpError(400, "Las cuatro horas deben estar en orden cronológico.");
+  // Leave room for every allowed random delay without crossing midnight.
+  if (timeToSeconds(config.exit_pm) + MAX_OFFSET_SECONDS >= 24 * 3600) {
+    throw new HttpError(400, "La salida debe ser como máximo a las 23:55 para permitir los ajustes aleatorios.");
   }
 
-  if (lunchIn - lunchOut < MIN_BREAK_SECONDS) {
-    throw new HttpError(400, "El descanso de mediodía debe ser como mínimo de una hora.");
-  }
-
-  const workedSeconds = lunchOut - entry + exit - lunchIn;
-  if (workedSeconds !== DAILY_TARGET_SECONDS) {
+  const workedSeconds = calculateWorkedSeconds(times);
+  if (workedSeconds !== targetSeconds) {
     throw new HttpError(
       400,
-      `El horario base suma ${formatDuration(workedSeconds)}; debe sumar 8:00:00.`
+      `El horario base suma ${formatDuration(workedSeconds)}; debe sumar ${formatDuration(targetSeconds)}.`
     );
   }
 }
@@ -903,9 +1009,9 @@ function validateEffectiveTimes(times) {
   if (!hasAllEvents(times)) return null;
 
   const entry = timeToSeconds(times.ENTRY_AM);
+  const exit = timeToSeconds(times.EXIT_PM);
   const lunchOut = timeToSeconds(times.LUNCH_OUT);
   const lunchIn = timeToSeconds(times.LUNCH_IN);
-  const exit = timeToSeconds(times.EXIT_PM);
 
   if (!(entry < lunchOut && lunchOut < lunchIn && lunchIn < exit)) {
     return "Las marcas deben mantener el orden cronológico del día.";
@@ -933,17 +1039,25 @@ function hasAllEvents(times) {
 // SCHEDULER
 // ==================================================
 
-async function runScheduler(env, scheduledAt, actualNow) {
+export async function prepareScheduledDay(env, scheduledAt) {
   await ensureSchemaOnce(env);
   const config = await getConfig(env);
   if (!config || !config.active) return;
 
   const scheduledLocal = getMadridParts(scheduledAt);
+  if (calendarSetupMessage(config, scheduledLocal.date) || getHoliday(config.office, scheduledLocal.date)) return;
   if (scheduledLocal.weekday === 0 || scheduledLocal.weekday === 6) return;
   if (await isVacation(env, scheduledLocal.date)) return;
 
   const weekStart = getWeekStart(scheduledLocal.date);
   await ensureWeekPlan(env, weekStart, config);
+  return { scheduledLocal, weekStart };
+}
+
+async function runScheduler(env, scheduledAt, actualNow) {
+  const prepared = await prepareScheduledDay(env, scheduledAt);
+  if (!prepared) return;
+  const { scheduledLocal, weekStart } = prepared;
 
   const [plan, pause, manualRows] = await Promise.all([
     env.DB.prepare(`
@@ -1000,38 +1114,7 @@ async function runScheduler(env, scheduledAt, actualNow) {
 
 async function processEvent(env, day, event, scheduledTime, now) {
   const mode = String(env.MODE || "TEST").toUpperCase();
-  const existing = await env.DB.prepare(`
-    SELECT status, scheduled_time
-    FROM punch_log
-    WHERE day = ?1 AND event = ?2
-  `).bind(day, event).first();
-
-  if (existing?.status === "SUCCESS") return;
-  if (existing?.status === "PENDING") return;
-  if (
-    mode !== "LIVE" &&
-    existing?.status === "TEST" &&
-    existing?.scheduled_time === scheduledTime
-  ) {
-    return;
-  }
-
-  if (!existing) {
-    await env.DB.prepare(`
-      INSERT INTO punch_log (
-        day, event, scheduled_time, status, attempts
-      ) VALUES (?1, ?2, ?3, 'PENDING', 1)
-    `).bind(day, event, scheduledTime).run();
-  } else {
-    await env.DB.prepare(`
-      UPDATE punch_log
-      SET status = 'PENDING',
-          scheduled_time = ?3,
-          attempts = attempts + 1,
-          error = NULL
-      WHERE day = ?1 AND event = ?2
-    `).bind(day, event, scheduledTime).run();
-  }
+  if (!await claimScheduledEvent(env, day, event, scheduledTime, mode)) return;
 
   try {
     await clockWoffu(env, event, now);
@@ -1056,6 +1139,28 @@ async function processEvent(env, day, event, scheduledTime, now) {
   }
 }
 
+export async function claimScheduledEvent(env, day, event, scheduledTime, mode) {
+  const config = await getConfig(env);
+  if (!config?.active || calendarSetupMessage(config, day) || getHoliday(config.office, day) || !isWeekdayDate(day)) return false;
+  // Recheck after waiting. A real attempt, including an uncertain failure, must
+  // not be repeated or overwritten by TEST mode after changing the schedule.
+  const claim = await env.DB.prepare(`
+    INSERT INTO punch_log (day, event, scheduled_time, status, attempts)
+    SELECT ?1, ?2, ?3, 'PENDING', 1
+    WHERE EXISTS (SELECT 1 FROM config WHERE id = 1 AND active = 1 AND office = ?6)
+      AND EXISTS (SELECT 1 FROM test_plan WHERE day = ?1 AND event = ?2 AND planned_time = ?3)
+      AND NOT EXISTS (SELECT 1 FROM vacations WHERE date = ?1)
+      AND NOT EXISTS (SELECT 1 FROM manual_events WHERE day = ?1 AND event = ?2)
+      AND NOT EXISTS (SELECT 1 FROM day_pauses WHERE day = ?1 AND paused_from_order <= ?4)
+    ON CONFLICT(day, event) DO UPDATE SET
+      status = 'PENDING', scheduled_time = excluded.scheduled_time,
+      attempts = punch_log.attempts + 1, error = NULL
+    WHERE punch_log.status = 'TEST'
+      AND (?5 = 1 OR punch_log.scheduled_time != excluded.scheduled_time)
+  `).bind(day, event, scheduledTime, EVENTS.find((item) => item.event === event).order, mode === "LIVE" ? 1 : 0, config.office).run();
+  return Number(claim.meta?.changes) > 0;
+}
+
 async function clockWoffu(env, event, now) {
   const mode = String(env.MODE || "TEST").toUpperCase();
 
@@ -1074,6 +1179,35 @@ async function isVacation(env, date) {
   return Boolean(row);
 }
 
+function calendarSetupMessage(config, day) {
+  if (!isOffice(config?.office)) return "Selecciona tu oficina en Ajustes para activar los festivos y la automatización.";
+  const year = day.slice(0, 4);
+  if (!hasHolidayCalendar(config.office, year)) {
+    return "Falta el calendario de festivos de " + year + ". Actualízalo antes de activar los fichajes.";
+  }
+  return null;
+}
+
+function configuredDayBlockReason(config, day) {
+  // Preserve existing planning and manual records until an office is selected.
+  // Automatic/real punches additionally require calendarSetupMessage() to pass.
+  if (!config.office) return null;
+  const missing = calendarSetupMessage(config, day);
+  if (missing) return missing;
+  const holiday = getHoliday(config.office, day);
+  return holiday ? "Festivo: " + holiday.name + ". No se ficha este día." : null;
+}
+
+export async function getPunchBlockReason(env, day = getMadridParts(new Date()).date) {
+  await ensureSchemaOnce(env);
+  const config = await getConfig(env);
+  const calendarReason = calendarSetupMessage(config, day) || configuredDayBlockReason(config, day);
+  if (calendarReason) return calendarReason;
+  if (!isWeekdayDate(day)) return "No se ficha en fin de semana.";
+  if (await isVacation(env, day)) return "El día está marcado como vacaciones.";
+  return null;
+}
+
 // ==================================================
 // STATIC APP SHELL
 // ==================================================
@@ -1084,98 +1218,57 @@ function appShell() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#0b0d12">
+  <meta name="theme-color" content="#061c43">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Woffu Clock">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <title>Woffu Clock</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg:#f4f5f7;
-      --surface:#ffffff;
-      --surface-2:#f8f8fa;
-      --text:#13151a;
-      --muted:#6e7480;
-      --line:#e7e8ec;
-      --brand:#151922;
-      --green:#137a3b;
-      --green-soft:#eaf7ef;
-      --red:#b42318;
-      --red-soft:#fff0ee;
-      --amber:#a45d00;
-      --amber-soft:#fff5df;
-      --blue:#2457d6;
-      --radius:18px;
-      --shadow:0 1px 2px rgba(13,18,28,.05),0 8px 24px rgba(13,18,28,.04);
-      --tap:48px;
-    }
-
-    *{box-sizing:border-box}
-    html{background:var(--bg);scroll-behavior:smooth}
-    body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-    button,input,select{font:inherit}
-    button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-    .app{min-height:100dvh}
-    .topbar{position:sticky;top:0;z-index:30;padding:calc(12px + env(safe-area-inset-top)) 16px 12px;background:rgba(244,245,247,.9);backdrop-filter:blur(18px);border-bottom:1px solid rgba(231,232,236,.75)}
-    .topbarInner{max-width:980px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .brand{display:flex;align-items:center;gap:10px;min-width:0}
-    .logo{width:38px;height:38px;border-radius:12px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:850;letter-spacing:-.04em;box-shadow:var(--shadow)}
-    .brandText{min-width:0}.brandText strong{display:block;font-size:16px;line-height:1.1}.brandText span{display:block;color:var(--muted);font-size:11px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .statusPill{height:36px;padding:0 12px;border-radius:999px;display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--line);font-size:13px;font-weight:750;box-shadow:0 1px 2px rgba(0,0,0,.03)}
-    .statusDot{width:8px;height:8px;border-radius:50%;background:#9ba0aa}.statusPill.on .statusDot{background:var(--green);box-shadow:0 0 0 4px rgba(19,122,59,.12)}.statusPill.off .statusDot{background:var(--red)}
-    .layout{max-width:980px;margin:auto;padding:14px 14px calc(92px + env(safe-area-inset-bottom))}
-    .view{display:none;animation:fade .16s ease}.view.active{display:block}
-    @keyframes fade{from{opacity:.4;transform:translateY(3px)}to{opacity:1;transform:none}}
-    .hero{border-radius:24px;padding:22px;background:linear-gradient(145deg,#11151d,#242b39);color:#fff;box-shadow:0 14px 40px rgba(19,24,34,.18);margin-bottom:14px;position:relative;overflow:hidden}
-    .hero:after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;right:-80px;top:-90px;background:rgba(255,255,255,.07)}
-    .eyebrow{font-size:12px;color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.08em;font-weight:750}
-    .heroValue{font-size:34px;line-height:1;font-weight:850;letter-spacing:-.04em;margin:8px 0 7px}.heroSub{font-size:14px;color:rgba(255,255,255,.72)}
-    .heroActions{display:flex;gap:9px;margin-top:18px;position:relative;z-index:1}.heroActions button{flex:1}
-    .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:14px}
-    .metric{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:13px;min-width:0}.metricLabel{color:var(--muted);font-size:11px;font-weight:700}.metricValue{font-size:18px;font-weight:820;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.metricValue.positive{color:var(--green)}.metricValue.negative{color:var(--red)}
-    .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:17px;margin-bottom:12px;box-shadow:var(--shadow)}
-    .cardHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px}.cardTitle{margin:0;font-size:18px;letter-spacing:-.02em}.cardHint{margin:4px 0 0;color:var(--muted);font-size:13px;line-height:1.4}
-    .weekStrip{display:grid;gap:8px}.dayCard{border:1px solid var(--line);background:var(--surface-2);border-radius:15px;padding:13px}.dayCard.vacation{background:var(--amber-soft);border-color:#f1d49d}.dayHead{display:flex;align-items:center;justify-content:space-between;gap:10px}.dayName{font-weight:800}.dayDate{color:var(--muted);font-size:12px}.dayTotal{font-weight:820;font-size:14px}.eventGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:11px}.eventChip{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:8px 6px;text-align:center;min-width:0}.eventChip span{display:block;font-size:10px;color:var(--muted);margin-bottom:3px}.eventChip strong{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.eventChip.manual{border-color:#9db5f8;background:#f3f6ff}
-    .sectionTitle{font-size:24px;letter-spacing:-.035em;margin:4px 2px 5px}.sectionLead{color:var(--muted);font-size:14px;margin:0 2px 16px;line-height:1.45}
-    .calendarToolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}.calendarTitle{font-size:17px;font-weight:820;text-align:center}.iconButton{width:var(--tap);height:var(--tap);border:1px solid var(--line);background:var(--surface-2);border-radius:14px;font-size:19px;margin:0;padding:0;color:var(--text)}
-    .calendarGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}.weekday{text-align:center;color:var(--muted);font-size:11px;font-weight:750;padding:7px 0}.calBlank{aspect-ratio:1}.calDay{aspect-ratio:1;border:0;border-radius:12px;background:var(--surface-2);color:var(--text);margin:0;padding:0;display:grid;place-items:center;position:relative;font-weight:680;transition:transform .08s ease,background .12s ease}.calDay:active{transform:scale(.92)}.calDay.selected{background:var(--brand);color:#fff}.calDay.today:after{content:"";position:absolute;bottom:5px;width:4px;height:4px;border-radius:50%;background:var(--blue)}.calDay.selected.today:after{background:#fff}.calDay.weekend{opacity:.28}.calendarSave{position:sticky;bottom:calc(76px + env(safe-area-inset-bottom));z-index:10;margin-top:14px;padding:10px;background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(14px);display:flex;align-items:center;gap:10px}.calendarSave span{font-size:12px;color:var(--muted);flex:1}.calendarSave button{width:auto;min-width:130px}
-    .formGrid{display:grid;gap:12px}.field label{display:block;font-size:12px;font-weight:760;margin-bottom:6px;color:#4f5560}.input{width:100%;height:var(--tap);border:1px solid var(--line);border-radius:13px;background:var(--surface-2);padding:0 13px;color:var(--text);outline:none}.input:focus{border-color:#839cea;box-shadow:0 0 0 3px rgba(36,87,214,.1)}
-    .button{min-height:var(--tap);border:0;border-radius:13px;padding:0 15px;font-weight:780;margin:0;cursor:pointer}.button.primary{background:var(--brand);color:#fff}.button.secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--line)}.button.success{background:var(--green);color:#fff}.button.danger{background:var(--red);color:#fff}.button.ghost{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.18)}.button:disabled{opacity:.42;cursor:default}.button.loading{pointer-events:none;opacity:.65}
-    .rowActions{display:flex;gap:9px}.rowActions .button{flex:1}
-    .manualList{display:grid;gap:8px;margin-top:13px}.manualItem{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:13px;padding:11px}.manualMain{min-width:0}.manualMain strong{display:block;font-size:14px}.manualMain span{display:block;color:var(--muted);font-size:12px;margin-top:3px}.smallButton{border:0;border-radius:10px;padding:8px 10px;background:var(--red-soft);color:var(--red);font-size:12px;font-weight:750;margin:0;width:auto}
-    .notice{border-radius:13px;padding:12px 13px;font-size:13px;line-height:1.4}.notice.test{background:var(--amber-soft);color:#704300}.notice.ok{background:var(--green-soft);color:#095c2a}.notice.pending{background:var(--red-soft);color:#842018}
-    .logs{display:grid;gap:7px}.log{display:grid;grid-template-columns:1fr auto;gap:8px;border-bottom:1px solid var(--line);padding:9px 0}.log:last-child{border-bottom:0}.log strong{font-size:13px}.log span{font-size:12px;color:var(--muted)}.logStatus{font-size:11px;font-weight:800;padding:5px 8px;border-radius:999px;background:var(--surface-2);align-self:center}
-    .bottomNav{position:fixed;z-index:40;left:10px;right:10px;bottom:calc(8px + env(safe-area-inset-bottom));height:64px;background:rgba(20,23,30,.94);backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.09);border-radius:20px;padding:6px;display:grid;grid-template-columns:repeat(4,1fr);gap:3px;box-shadow:0 12px 34px rgba(0,0,0,.24)}.navButton{border:0;background:transparent;color:rgba(255,255,255,.58);border-radius:15px;margin:0;padding:5px 2px;font-size:10px;font-weight:700;display:grid;place-items:center;gap:2px}.navButton .navIcon{font-size:19px;line-height:1}.navButton.active{background:rgba(255,255,255,.13);color:#fff}
-    .toast{position:fixed;z-index:70;left:50%;bottom:calc(86px + env(safe-area-inset-bottom));transform:translate(-50%,20px);max-width:calc(100vw - 28px);padding:11px 14px;border-radius:13px;background:#151922;color:#fff;font-size:13px;font-weight:680;opacity:0;pointer-events:none;transition:.2s ease;box-shadow:0 12px 30px rgba(0,0,0,.28)}.toast.show{opacity:1;transform:translate(-50%,0)}.toast.error{background:#8e1c15}
-    .skeleton{position:relative;overflow:hidden;background:#eceef2!important;color:transparent!important;border-color:transparent!important}.skeleton:after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.62),transparent);animation:shine 1.15s infinite}@keyframes shine{to{transform:translateX(100%)}}
-    .loadingScreen{display:grid;gap:10px}.loadingBlock{height:98px;border-radius:18px}
-    .desktopNav{display:none}
-    @media(min-width:760px){.layout{padding:22px 22px 40px}.app{display:grid;grid-template-columns:210px minmax(0,1fr);max-width:1200px;margin:auto}.topbar{grid-column:1/-1}.desktopNav{display:block;position:sticky;top:90px;align-self:start;padding:18px 10px}.desktopNav .navButton{color:var(--muted);height:50px;display:flex;justify-content:flex-start;padding:0 14px;font-size:14px;margin-bottom:5px}.desktopNav .navButton.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}.desktopNav .navIcon{width:24px;text-align:center}.bottomNav{display:none}.metrics{grid-template-columns:repeat(3,1fr)}.weekStrip{grid-template-columns:repeat(2,minmax(0,1fr))}.formGrid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.calendarSave{bottom:16px}.toast{bottom:24px}}
-    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
-  </style>
+  <style>${appStyles}</style>
 </head>
 <body>
+<div id="brandIntro" class="brandIntro" role="dialog" aria-modal="true" aria-label="Bienvenida a Woffu Clock" hidden>
+  <div class="introVisual" aria-hidden="true">
+    <img class="introBackdrop" data-src="/assets/intro-glass-v1.webp" alt="" width="1600" height="900" decoding="async">
+    <div class="introStage">
+      <div class="introEmblemFlight">
+        <div class="introEmblemRotor">
+          ${Array.from({ length: 18 }, (_, index) => `<img class="introEmblemLayer" src="/assets/capgemini-emblem-blue.svg" alt="" width="204" height="192" style="--depth:${-36 + index * 2}px">`).join("")}
+          <img class="introEmblemFace" src="/assets/capgemini-emblem.svg" alt="" width="204" height="192">
+        </div>
+      </div>
+      <div class="introIdentity">
+        <img class="introWordmark" src="/assets/capgemini-white.svg" alt="" width="400" height="91">
+        <p class="introAppName">Woffu Clock</p>
+      </div>
+    </div>
+  </div>
+  <button type="button" id="skipBrandIntro" class="brandIntroSkip">Saltar intro <span aria-hidden="true">Esc</span></button>
+</div>
 <div class="app">
   <header class="topbar">
     <div class="topbarInner">
-      <div class="brand">
-        <div class="logo">W</div>
-        <div class="brandText"><strong>Woffu Clock</strong><span id="versionText">${APP_VERSION}</span></div>
+      <div class="mobileBrand"><img src="/assets/capgemini-white.svg" alt="Capgemini" width="145" height="34"><span>Woffu Clock</span></div>
+      <p class="viewTitle" id="viewTitle">Resumen</p>
+      <div class="headerControls">
+        <button type="button" class="headerControl" data-action="go-settings" data-focus="officeInput" aria-label="Cambiar oficina">${uiIcon("map-pin")}<span id="headerOffice">Oficina</span>${uiIcon("chevron-down")}</button>
+        <button type="button" class="headerControl" data-action="go-settings" data-focus="dailyHoursInput" aria-label="Cambiar jornada">${uiIcon("clock")}<span id="headerHours">Jornada</span>${uiIcon("chevron-down")}</button>
+        <button id="quickToggle" class="statusPill off" type="button" aria-label="Cambiar estado">
+          <span class="statusDot"></span><span id="statusText">Cargando</span>
+        </button>
       </div>
-      <button id="quickToggle" class="statusPill off" type="button" aria-label="Cambiar estado">
-        <span class="statusDot"></span><span id="statusText">Cargando</span>
-      </button>
     </div>
   </header>
 
   <aside class="desktopNav" aria-label="Navegación principal">
-    ${navButtons("desktop")}
+    <div class="sidebarBrand"><img class="brandLogo" src="/assets/capgemini-white.svg" alt="Capgemini" width="285" height="65"><p>Woffu Clock</p></div>
+    <div class="desktopLinks">${navButtons("desktop")}</div>
+    <div class="sidebarFooter"><span class="modeLabel">${uiIcon("info")}<span id="sidebarMode">Planificación de jornada</span></span><p id="versionText"></p></div>
   </aside>
 
   <main class="layout">
+    <div id="feedback" class="notice pending feedback" role="alert" hidden><div id="feedbackText"></div><button id="retryLoad" type="button" class="button secondary">Actualizar datos</button></div>
     <section id="view-home" class="view active">
       <div id="homeContent" class="loadingScreen">
         <div class="loadingBlock skeleton"></div>
@@ -1185,19 +1278,22 @@ function appShell() {
     </section>
 
     <section id="view-calendar" class="view">
-      <h1 class="sectionTitle">Vacaciones</h1>
-      <p class="sectionLead">Selecciona días de distintos meses sin recargar la pantalla. Se guardan todos juntos.</p>
+      <h1 class="sectionTitle">Calendario laboral</h1>
+      <p class="sectionLead">Tus vacaciones y los festivos de tu oficina. En ambos casos, no se realizan fichajes.</p>
       <div class="card">
         <div class="calendarToolbar">
-          <button id="calendarPrev" class="iconButton" type="button">←</button>
-          <div id="calendarTitle" class="calendarTitle"></div>
-          <button id="calendarNext" class="iconButton" type="button">→</button>
+          <button id="calendarPrev" class="iconButton" type="button" aria-label="Mes anterior">${uiIcon("chevron-left")}</button>
+          <div id="calendarTitle" class="calendarTitle" aria-live="polite"></div>
+          <button id="calendarNext" class="iconButton" type="button" aria-label="Mes siguiente">${uiIcon("chevron-right")}</button>
         </div>
+        <p id="calendarInfo" class="calendarMeta"></p>
+        <div class="calendarLegend" aria-label="Leyenda del calendario"><span><i class="legendDot" aria-hidden="true"></i>Vacaciones</span><span><i class="legendDot holiday" aria-hidden="true"></i>Festivo de oficina</span></div>
         <div id="calendarGrid" class="calendarGrid"></div>
         <div class="calendarSave">
           <span id="calendarStatus">Sin cambios pendientes</span>
           <button id="saveVacations" class="button primary" type="button" disabled>Guardar</button>
         </div>
+        <ul id="holidayList" class="holidayList" aria-label="Festivos de este mes"></ul>
       </div>
     </section>
 
@@ -1228,15 +1324,19 @@ ${clientScript()}
 
 function navButtons(scope) {
   return [
-    ["home", "⌂", "Resumen"],
-    ["calendar", "□", "Vacaciones"],
-    ["manual", "◷", "Manual"],
-    ["settings", "⚙", "Ajustes"],
+    ["home", "home", "Resumen"],
+    ["calendar", "calendar", "Calendario"],
+    ["manual", "clock", "Manual"],
+    ["settings", "settings", "Ajustes"],
   ].map(([view, icon, label], index) => `
-    <button type="button" class="navButton ${index === 0 ? "active" : ""}" data-view="${view}" data-scope="${scope}">
-      <span class="navIcon">${icon}</span><span>${label}</span>
+    <button type="button" class="navButton ${index === 0 ? "active" : ""}" ${index === 0 ? 'aria-current="page"' : ""} data-view="${view}" data-scope="${scope}">
+      ${uiIcon(icon)}<span>${label}</span>
     </button>
   `).join("");
+}
+
+function uiIcon(name) {
+  return `<img class="icon" src="/assets/icons/${name}.svg" alt="" aria-hidden="true" width="22" height="22">`;
 }
 
 function clientScript() {
@@ -1253,7 +1353,7 @@ function clientApp() {
     { event: "EXIT_PM", label: "Salida tarde", shortLabel: "Salida", order: 4 },
   ];
 
-  const CACHE_KEY = "woffu-clock-dashboard-v3";
+  const CACHE_KEY = "woffu-clock-dashboard-v3.5-holidays";
   const state = {
     data: null,
     currentView: "home",
@@ -1262,6 +1362,12 @@ function clientApp() {
     vacationBaseline: new Set(),
     manualDay: null,
     busy: false,
+    loading: false,
+    fresh: false,
+    requestId: 0,
+    controller: null,
+    configDraft: null,
+    officeDraft: null,
   };
 
   const els = {
@@ -1279,8 +1385,79 @@ function clientApp() {
 
   bindNavigation();
   bindGlobalActions();
+  showBrandIntro();
   restoreCache();
   loadData({ silent: Boolean(state.data) });
+
+  function showBrandIntro({ replay = false } = {}) {
+    const intro = document.getElementById("brandIntro");
+    if (!intro.hidden) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const key = "woffu-capgemini-welcome-v2";
+    try {
+      if (!replay && sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "seen");
+    } catch { if (!replay) return; }
+    if (reducedMotion.matches) {
+      if (replay) toast("La animación está desactivada por tu preferencia de movimiento reducido.");
+      return;
+    }
+
+    const app = document.querySelector(".app");
+    const skip = document.getElementById("skipBrandIntro");
+    const backdrop = intro.querySelector(".introBackdrop");
+    const previousFocus = document.activeElement;
+    let fallback;
+    const dismiss = (restoreFocus = replay) => {
+      if (intro.hidden) return;
+      intro.hidden = true;
+      app.inert = false;
+      document.body.classList.remove("introActive");
+      clearTimeout(fallback);
+      window.removeEventListener("keydown", onKeyDown, true);
+      reducedMotion.removeEventListener("change", onMotionChange);
+      intro.removeEventListener("animationend", onAnimationEnd);
+      skip.removeEventListener("click", onSkip);
+      if (restoreFocus) {
+        const target = previousFocus && previousFocus !== document.body
+          ? previousFocus : app.querySelector(".desktopLinks [data-view='home'], .bottomNav [data-view='home']");
+        // The first navigation can be hidden at a mobile breakpoint.
+        const visibleTarget = target?.getClientRects().length ? target
+          : app.querySelector(".headerControl");
+        visibleTarget?.focus({ preventScroll: true });
+      } else {
+        skip.blur();
+      }
+    };
+    const onSkip = () => dismiss(true);
+    const onMotionChange = () => dismiss();
+    const onAnimationEnd = (event) => {
+      if (event.target === intro && event.animationName === "introAway") dismiss();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        dismiss(true);
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        skip.focus({ preventScroll: true });
+      }
+    };
+
+    // The heavier backdrop is fetched only when this session actually plays the intro.
+    backdrop.src = backdrop.dataset.src;
+    app.inert = true;
+    document.body.classList.add("introActive");
+    intro.hidden = false;
+    skip.focus({ preventScroll: true });
+    skip.addEventListener("click", onSkip);
+    intro.addEventListener("animationend", onAnimationEnd);
+    window.addEventListener("keydown", onKeyDown, true);
+    reducedMotion.addEventListener("change", onMotionChange, { once: true });
+    // Release the interface even if an animation event or an asset fails.
+    fallback = setTimeout(() => dismiss(), 3800);
+  }
 
   function bindNavigation() {
     document.querySelectorAll("[data-view]").forEach((button) => {
@@ -1288,25 +1465,55 @@ function clientApp() {
     });
 
     document.getElementById("calendarPrev").addEventListener("click", () => {
+      if (!state.calendarMonth) return;
       state.calendarMonth = shiftMonth(state.calendarMonth, -1);
       renderCalendar();
     });
 
     document.getElementById("calendarNext").addEventListener("click", () => {
+      if (!state.calendarMonth) return;
       state.calendarMonth = shiftMonth(state.calendarMonth, 1);
       renderCalendar();
     });
 
     els.saveVacations.addEventListener("click", saveVacations);
-    els.quickToggle.addEventListener("click", toggleActive);
+    els.quickToggle.addEventListener("click", () => toggleActive());
+    document.getElementById("retryLoad").addEventListener("click", () => loadData());
   }
 
   function bindGlobalActions() {
+    document.addEventListener("pointerdown", () => { document.documentElement.dataset.input = "pointer"; });
+    document.addEventListener("keydown", () => { document.documentElement.dataset.input = "keyboard"; });
+    document.addEventListener("input", (event) => {
+      if (event.target.form?.id === "configForm") {
+        state.configDraft = Object.fromEntries(new FormData(event.target.form).entries());
+      }
+      if (event.target.form?.id === "officeForm") state.officeDraft = event.target.value;
+    });
     document.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-action]");
       if (!button) return;
 
       const action = button.dataset.action;
+      if (action === "replay-intro") return showBrandIntro({ replay: true });
+      if (action === "go-settings") {
+        setView("settings");
+        document.getElementById(button.dataset.focus || "officeInput")?.focus();
+        return;
+      }
+      if (action === "go-calendar") {
+        renderCalendar();
+        setView("calendar");
+        return;
+      }
+      if (action === "home-month-prev" || action === "home-month-next") {
+        state.calendarMonth = shiftMonth(state.calendarMonth, action === "home-month-prev" ? -1 : 1);
+        renderHome();
+        renderCalendar();
+        updatePendingControls();
+        els.home.querySelector('[data-action="' + action + '"]')?.focus({ preventScroll: true });
+        return;
+      }
       if (action === "toggle-active") return toggleActive(button);
       if (action === "regenerate") return regenerateWeek(button);
       if (action === "remove-manual") return removeManual(button);
@@ -1319,6 +1526,10 @@ function clientApp() {
     });
 
     document.addEventListener("submit", async (event) => {
+      if (event.target.id === "officeForm") {
+        event.preventDefault();
+        return saveOffice(event.target);
+      }
       if (event.target.id === "configForm") {
         event.preventDefault();
         return saveConfig(event.target);
@@ -1343,6 +1554,10 @@ function clientApp() {
     });
 
     document.addEventListener("change", (event) => {
+      if (event.target.id === "dailyHoursInput") {
+        updateScheduleFields(event.target.form);
+        state.configDraft = Object.fromEntries(new FormData(event.target.form).entries());
+      }
       if (event.target.id === "manualDayInput") {
         state.manualDay = event.target.value;
         loadData({ manualDay: state.manualDay, silent: true });
@@ -1355,10 +1570,13 @@ function clientApp() {
     document.querySelectorAll(".view").forEach((section) => {
       section.classList.toggle("active", section.id === "view-" + view);
     });
+    document.getElementById("viewTitle").textContent = { home: "Resumen", calendar: "Calendario", manual: "Manual", settings: "Ajustes" }[view] || "Woffu Clock";
     document.querySelectorAll("[data-view]").forEach((button) => {
       button.classList.toggle("active", button.dataset.view === view);
+      if (button.dataset.view === view) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
 
   function restoreCache() {
@@ -1371,11 +1589,17 @@ function clientApp() {
       resetVacations(cached.vacations || []);
       renderAll(true);
     } catch {
-      localStorage.removeItem(CACHE_KEY);
+      try { localStorage.removeItem(CACHE_KEY); } catch { /* Storage is optional. */ }
     }
   }
 
   async function loadData(options = {}) {
+    const requestId = ++state.requestId;
+    state.controller?.abort();
+    state.controller = new AbortController();
+    state.loading = true;
+    state.fresh = false;
+    updatePendingControls();
     const manualDay = options.manualDay || state.manualDay || "";
     const params = new URLSearchParams();
     if (manualDay) params.set("manual_day", manualDay);
@@ -1383,20 +1607,46 @@ function clientApp() {
 
     try {
       if (!options.silent && !state.data) showLoading();
-      const data = await api("/api/bootstrap?" + params.toString());
+      const data = await api("/api/bootstrap?" + params.toString(), { signal: state.controller.signal });
+      if (requestId !== state.requestId) return false;
       state.data = data;
+      state.fresh = true;
       state.manualDay = data.manualDay?.date || data.today;
       if (!state.calendarMonth) state.calendarMonth = String(data.today).slice(0, 7);
 
       const vacationDirty = vacationDifferenceCount() > 0;
       if (!vacationDirty) resetVacations(data.vacations || []);
 
-      localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+      cacheState();
+      document.getElementById("feedback").hidden = true;
       renderAll(false);
+      return true;
     } catch (error) {
+      if (requestId !== state.requestId || error.name === "AbortError") return false;
+      if (options.throwOnError) throw error;
       toast(error.message || "No se han podido cargar los datos.", true);
       if (!state.data) showFatal(error.message);
+      return false;
+    } finally {
+      if (requestId === state.requestId) {
+        state.loading = false;
+        updatePendingControls();
+      }
     }
+  }
+
+  function cacheState() {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(state.data)); } catch { /* The live app works without storage. */ }
+  }
+
+  function updatePendingControls() {
+    document.querySelectorAll('form button, [data-action], #quickToggle, #saveVacations').forEach((button) => {
+      button.disabled = state.busy || state.loading || !state.fresh ||
+        button.dataset.unavailable === "true" ||
+        (button === els.saveVacations && vacationDifferenceCount() === 0);
+    });
+    document.querySelectorAll('form input, form select').forEach((input) => { input.disabled = state.busy; });
+    els.manual.setAttribute("aria-busy", String(state.loading));
   }
 
   async function api(path, options = {}) {
@@ -1404,6 +1654,7 @@ function clientApp() {
       method: options.method || "GET",
       headers: { Accept: "application/json" },
       cache: "no-store",
+      signal: options.signal,
     };
 
     if (options.body !== undefined) {
@@ -1431,97 +1682,161 @@ function clientApp() {
     renderCalendar();
     renderManual();
     renderSettings();
+    updatePendingControls();
   }
 
   function renderHeader(fromCache) {
     const active = Boolean(state.data.config?.active);
-    els.quickToggle.classList.toggle("on", active);
-    els.quickToggle.classList.toggle("off", !active);
-    els.statusText.textContent = active ? "Activa" : "Pausada";
-    els.quickToggle.title = active ? "Pausar automatización" : "Activar automatización";
+    const ready = state.data.automation.ready;
+    els.quickToggle.classList.toggle("on", active && ready);
+    els.quickToggle.classList.toggle("off", !active || !ready);
+    els.statusText.textContent = !ready ? (active ? "Pendiente" : "Configurar") : active ? "Activa" : "Pausada";
+    els.quickToggle.title = active ? "Pausar automatización" : ready ? "Activar automatización" : "Configurar oficina y festivos";
+    els.quickToggle.setAttribute("aria-label", els.quickToggle.title);
+    els.quickToggle.setAttribute("aria-pressed", String(active));
     document.getElementById("versionText").textContent =
-      state.data.version + (fromCache ? " · actualizando" : "");
+      (state.data.holidayCalendar.label || "Jornada partida") + " · " + state.data.config.daily_hours + " h" + (fromCache ? " · actualizando" : "");
+    document.getElementById("headerOffice").textContent = state.data.holidayCalendar.label || "Elegir oficina";
+    document.getElementById("headerHours").textContent = "Jornada " + state.data.config.daily_hours + " h";
+    document.getElementById("sidebarMode").textContent = state.data.mode === "LIVE" ? "Modo LIVE" : "Modo TEST";
+  }
+
+  function icon(name) {
+    return '<img class="icon" src="/assets/icons/' + name + '.svg" alt="" aria-hidden="true" width="22" height="22">';
+  }
+
+  function dateLabel(date, options) {
+    return new Intl.DateTimeFormat("es-ES", Object.assign({ timeZone: "UTC" }, options))
+      .format(new Date(date + "T12:00:00Z"));
+  }
+
+  function plannedEvents(day, today = false) {
+    const effective = Object.assign({}, day.plan || {}, day.manual || {});
+    const icons = ["log-in", "coffee", "arrow-right", "log-out"];
+    return EVENTS.map((definition, index) => {
+      const manual = Object.prototype.hasOwnProperty.call(day.manual || {}, definition.event);
+      const paused = day.pauseFromOrder && definition.order >= day.pauseFromOrder && !manual;
+      return '<div class="' + (today ? 'todayEvent' : 'eventChip') + (manual ? ' manual' : '') + '">' +
+        (today ? icon('brand-' + icons[index]) : '') + '<span>' + escapeHtml(definition.shortLabel) + '</span>' +
+        '<strong>' + escapeHtml(paused ? 'Pendiente' : effective[definition.event] || '—') + '</strong></div>';
+    }).join("");
+  }
+
+  function dayReason(day) {
+    if (!day) return "Hoy es fin de semana. No hay fichajes programados.";
+    if (day.holiday) return "Festivo: " + day.holiday.name + ". No se ficha este día.";
+    if (day.vacation) return "Día de vacaciones. No hay fichajes programados.";
+    if (day.calendarMissing) return "Falta el calendario de festivos de este año. Revisa los ajustes.";
+    return "";
   }
 
   function renderHome() {
+    els.home.classList.remove("loadingScreen");
     const data = state.data;
     const week = data.week;
+    const today = week.days.find((day) => day.date === data.today);
+    const todayReason = dayReason(today);
+    const todayTitle = dateLabel(data.today, { weekday: "long", day: "numeric", month: "long" });
     const total = week.complete ? formatDuration(week.effectiveTotal) : "Pendiente";
-    const adjustment = week.complete
-      ? formatSignedDuration(week.adjustmentSeconds)
-      : "Pendiente";
-    const adjustmentClass = week.complete
-      ? week.adjustmentSeconds > 0
-        ? "positive"
-        : week.adjustmentSeconds < 0
-          ? "negative"
-          : ""
-      : "";
-
-    const dayCards = week.days.map((day) => {
-      if (day.vacation) {
-        return '<article class="dayCard vacation">' +
-          '<div class="dayHead"><div><div class="dayName">' + escapeHtml(day.label) +
-          '</div><div class="dayDate">' + formatDate(day.date) +
-          '</div></div><div class="dayTotal">🏖 Vacaciones</div></div></article>';
-      }
-
-      const effective = Object.assign({}, day.plan || {}, day.manual || {});
-      const chips = EVENTS.map((definition) => {
-        const manual = Object.prototype.hasOwnProperty.call(day.manual || {}, definition.event);
-        const time = effective[definition.event] || "—";
-        return '<div class="eventChip ' + (manual ? "manual" : "") + '">' +
-          '<span>' + escapeHtml(definition.shortLabel) + '</span>' +
-          '<strong>' + escapeHtml(time) + '</strong></div>';
-      }).join("");
-
-      const effectiveLabel = day.effectiveComplete
-        ? formatDuration(day.effectiveSeconds)
-        : "Pendiente";
-      const pauseLabel = day.pauseFromOrder
-        ? '<div class="notice pending" style="margin-top:9px">Pausada desde ' +
-          escapeHtml(eventByOrder(day.pauseFromOrder)?.label || "una marca") + '</div>'
-        : "";
-
-      return '<article class="dayCard">' +
-        '<div class="dayHead"><div><div class="dayName">' + escapeHtml(day.label) +
-        '</div><div class="dayDate">' + formatDate(day.date) +
-        '</div></div><div class="dayTotal">' + effectiveLabel + '</div></div>' +
-        '<div class="eventGrid">' + chips + '</div>' + pauseLabel +
-        '<button class="button secondary" style="width:100%;margin-top:10px" data-action="go-manual" data-day="' +
-        escapeHtml(day.date) + '">Gestionar este día</button></article>';
+    const target = week.targetSeconds === null ? "pendiente" : (week.targetSeconds / 3600) + " h";
+    const weekDates = dateLabel(week.start, { day: "numeric", month: "short" }) + " – " +
+      dateLabel(week.end, { day: "numeric", month: "long", year: "numeric" });
+    const days = week.days.map((day) => {
+      const reason = dayReason(day);
+      const badge = day.holiday ? '<span class="dayBadge holiday">Festivo</span>' :
+        day.vacation ? '<span class="dayBadge vacation">Vacaciones</span>' :
+        day.calendarMissing ? '<span class="dayBadge">Pendiente</span>' : '';
+      const shortDate = dateLabel(day.date, { weekday: "short" }).replace('.', '') + " " + Number(day.date.slice(8));
+      const dayTotal = !reason ? '<span class="dayTotal">' +
+        (day.effectiveComplete ? formatDuration(day.effectiveSeconds) : 'Pendiente') + '</span>' : '';
+      return '<details class="weekDay dayCard' + (day.date === data.today ? ' today' : '') +
+        (day.holiday ? ' holiday' : day.vacation ? ' vacation' : '') + '">' +
+        '<summary aria-label="Ver detalle del ' + escapeHtml(day.label.toLowerCase()) + ' ' + formatDate(day.date) + '">' +
+        '<span class="dayName">' + escapeHtml(shortDate.charAt(0).toUpperCase() + shortDate.slice(1)) + '</span>' + badge + dayTotal + icon('chevron-down') + '</summary>' +
+        '<div class="dayDetail"><p>' + formatDate(day.date) + (reason ? ' · ' + escapeHtml(reason) : '') + '</p>' +
+        (!reason ? '<div class="eventGrid">' + plannedEvents(day) + '</div>' +
+          (day.pauseFromOrder ? '<p class="notice pending">Automatización pausada desde ' +
+            escapeHtml(eventByOrder(day.pauseFromOrder)?.shortLabel || 'una marca') + '.</p>' : '') +
+          '<button class="button secondary" data-action="go-manual" data-day="' + day.date + '">Gestionar este día</button>' : '') +
+        '</div></details>';
     }).join("");
 
     els.home.innerHTML =
-      '<section class="hero">' +
-        '<div class="eyebrow">Total semanal previsto</div>' +
-        '<div class="heroValue">' + total + '</div>' +
-        '<div class="heroSub">Objetivo base: ' + formatDuration(week.targetSeconds) +
-        ' · ' + week.workdays + ' día(s) de trabajo</div>' +
-        '<div class="heroActions">' +
-          '<button class="button ghost" data-action="toggle-active">' +
-          (data.config.active ? "Pausar" : "Activar") + '</button>' +
-          '<button class="button ghost" data-action="regenerate">Regenerar semana</button>' +
-        '</div>' +
-      '</section>' +
-      '<div class="metrics">' +
-        metricHtml("Base", formatDuration(week.targetSeconds), "") +
-        metricHtml("Ajuste", adjustment, adjustmentClass) +
-        metricHtml("Días", String(week.workdays), "") +
-      '</div>' +
-      (data.mode !== "LIVE"
-        ? '<div class="notice test" style="margin-bottom:12px">🧪 Modo TEST: no se envía ningún fichaje a Woffu.</div>'
-        : "") +
-      '<section class="card"><div class="cardHeader"><div><h2 class="cardTitle">Esta semana</h2>' +
-        '<p class="cardHint">Las horas azules son marcas manuales.</p></div></div>' +
-        '<div class="weekStrip">' + dayCards + '</div></section>';
+      '<div class="homeHeading"><h1>Tu semana, en orden.</h1><p>' + escapeHtml(weekDates) + '</p></div>' +
+      (!data.automation.ready ? '<div class="notice test setupNotice">' + escapeHtml(data.automation.reason) +
+        '<div><button type="button" class="button secondary" data-action="go-settings">Revisar ajustes</button></div></div>' : '') +
+      '<div class="homeGrid"><div class="homeMain"><section class="hero" aria-label="Resumen semanal">' +
+        '<div><div class="eyebrow">Total semanal previsto</div><div class="heroValue">' + total + '</div>' +
+        '<div class="heroSub"><span>' + week.workdays + (week.workdays === 1 ? ' día laborable' : ' días laborables') +
+        '</span><span>· Objetivo ' + target + '</span></div></div>' +
+        '<div class="heroActions"><button class="button primary" data-action="toggle-active">' +
+        (data.config.active ? 'Pausar automatización' : data.automation.ready ? 'Activar automatización' : 'Configurar oficina') + '</button>' +
+        '<button class="button text" data-action="regenerate">Regenerar semana</button></div></section>' +
+      '<section class="todaySection"><div class="todayHeading"><div><h2>Plan de hoy</h2><p>' +
+        escapeHtml(todayTitle.charAt(0).toUpperCase() + todayTitle.slice(1)) + '</p></div>' +
+        (!todayReason ? '<button class="button text" data-action="go-manual" data-day="' + data.today + '">Gestionar día</button>' : '') + '</div>' +
+        (todayReason ? '<div class="notice ' + (today?.holiday ? 'holiday' : 'test') + '" style="margin-top:16px">' + escapeHtml(todayReason) + '</div>' :
+          '<div class="todayEvents">' + plannedEvents(today, true) + '</div>' +
+          '<p class="todayNote">Jornada partida · ' + (today.effectiveComplete ? formatDuration(today.effectiveSeconds) + ' previstas' : 'Hay marcas pendientes') + '</p>') +
+      '</section><div class="weekList" aria-label="Plan de esta semana">' + days + '</div>' +
+      '<div class="summaryAdjustment"><span>Las horas azules son marcas manuales.</span><span>Ajuste: ' +
+        (week.complete ? formatSignedDuration(week.adjustmentSeconds) : 'pendiente') + '</span></div>' +
+      (data.mode !== 'LIVE' ? '<p class="modeNotice">' + icon('info') + '<span>Modo TEST: no se envía ningún fichaje a Woffu.</span></p>' : '') +
+      '</div>' + homeCalendarHtml() + '</div>';
   }
 
-  function renderCalendar() {
+  function homeCalendarHtml() {
+    const data = state.data;
+    const monthValue = state.calendarMonth || data.today.slice(0, 7);
+    const [year, month] = monthValue.split('-').map(Number);
+    const calendar = data.holidayCalendar;
+    const title = dateLabel(monthValue + '-01', { month: 'long', year: 'numeric' });
+    const firstIndex = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+    const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    let grid = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sá', 'Do'].map((label) => '<span class="weekday">' + label + '</span>').join('');
+    grid += '<span class="calBlank"></span>'.repeat(firstIndex);
+    for (let day = 1; day <= dayCount; day++) {
+      const date = monthValue + '-' + String(day).padStart(2, '0');
+      const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+      const holiday = holidayFor(date);
+      const vacation = !holiday && data.vacations.includes(date);
+      const isToday = data.today === date;
+      const label = formatDate(date) + (holiday ? ', festivo: ' + holiday.name : vacation ? ', vacaciones' : '') + (isToday ? ', hoy' : '');
+      grid += '<span class="calDay' + (holiday ? ' holiday' : vacation ? ' selected' : '') +
+        (weekday === 0 || weekday === 6 ? ' weekend' : '') + (isToday ? ' today' : '') +
+        '" role="img" aria-label="' + escapeHtml(label) + '" title="' + escapeHtml(label) + '">' + day + '</span>';
+    }
+    const holidays = calendar.holidays.filter((day) => day.date.startsWith(monthValue + '-'));
+    const notice = !calendar.office ? 'Elige tu oficina para cargar sus festivos.' :
+      !calendar.years.includes(year) ? 'Festivos de ' + year + ' pendientes de actualizar.' : 'No se ficha en estos días.';
+    return '<section class="summaryCalendar" aria-label="Calendario de la oficina"><div class="calendarToolbar">' +
+      '<button class="iconButton" data-action="home-month-prev" aria-label="Mes anterior del resumen">' + icon('chevron-left') + '</button>' +
+      '<div><div class="calendarTitle" aria-live="polite">' + escapeHtml(title.charAt(0).toUpperCase() + title.slice(1)) + '</div><p class="calendarOffice">' +
+      escapeHtml(calendar.label || 'Oficina pendiente') + '</p></div>' +
+      '<button class="iconButton" data-action="home-month-next" aria-label="Mes siguiente del resumen">' + icon('chevron-right') + '</button></div>' +
+      '<div class="calendarGrid">' + grid + '</div>' +
+      '<div class="calendarLegend"><span><i class="legendDot holiday" aria-hidden="true"></i>Festivo</span><span><i class="legendDot" aria-hidden="true"></i>Vacaciones</span></div>' +
+      '<p class="calendarNoPunch">' + escapeHtml(notice) + '</p>' +
+      (holidays.length ? '<ul class="holidayList">' + holidays.map((day) => '<li><time datetime="' + day.date + '">' +
+        escapeHtml(dateLabel(day.date, { day: 'numeric', month: 'short' })) + '</time><span>' + escapeHtml(day.name) + '</span></li>').join('') + '</ul>' : '') +
+      '<button class="button text calendarLink" data-action="go-calendar">Gestionar calendario ' + icon('arrow-right') + '</button></section>';
+  }
+
+
+  function renderCalendar(focusDate = null) {
     if (!state.data || !state.calendarMonth) return;
     const parts = state.calendarMonth.split("-").map(Number);
     const year = parts[0];
     const month = parts[1];
+    const calendar = state.data.holidayCalendar;
+    const available = calendar.years.includes(year);
+    const calendarInfo = document.getElementById("calendarInfo");
+    calendarInfo.textContent = !calendar.office
+      ? "Elige tu oficina en Ajustes para cargar sus festivos y activar los fichajes."
+      : !available
+        ? calendar.label + ": faltan los festivos de " + year + ". No se realizarán fichajes en ese año hasta actualizar el calendario."
+        : calendar.label + " · Festivos nacionales, autonómicos y locales. No consumen vacaciones.";
+    calendarInfo.className = available ? "calendarMeta" : "calendarMeta notice test";
     const names = [
       "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
       "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
@@ -1550,38 +1865,55 @@ function clientApp() {
       const date = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
       const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
       const weekend = weekday === 0 || weekday === 6;
+      const holiday = holidayFor(date);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "calDay";
       button.textContent = String(day);
-      button.disabled = weekend;
+      button.disabled = weekend || Boolean(holiday);
       button.classList.toggle("weekend", weekend);
-      button.classList.toggle("selected", state.vacationSelected.has(date));
+      button.classList.toggle("holiday", Boolean(holiday));
+      button.classList.toggle("selected", !holiday && state.vacationSelected.has(date));
       button.classList.toggle("today", state.data.today === date);
-      button.setAttribute("aria-pressed", state.vacationSelected.has(date) ? "true" : "false");
+      if (!holiday) button.setAttribute("aria-pressed", state.vacationSelected.has(date) ? "true" : "false");
+      button.setAttribute("aria-label", formatDate(date) + (holiday ? ", festivo: " + holiday.name : weekend ? ", fin de semana" : ", vacaciones"));
+      if (holiday) button.title = holiday.name + (holiday.local ? " · Festivo local" : " · Festivo");
+      button.dataset.date = date;
+      if (date === state.data.today) button.setAttribute("aria-current", "date");
 
-      if (!weekend) {
+      if (!weekend && !holiday) {
         button.addEventListener("click", () => {
           if (state.vacationSelected.has(date)) state.vacationSelected.delete(date);
           else state.vacationSelected.add(date);
-          renderCalendar();
+          renderCalendar(date);
         });
       }
 
       els.calendarGrid.appendChild(button);
     }
 
+    document.getElementById("holidayList").innerHTML = calendar.holidays
+      .filter((holiday) => holiday.date.startsWith(state.calendarMonth + "-"))
+      .map((holiday) => '<li><time datetime="' + holiday.date + '">' + formatDate(holiday.date).slice(0, 5) +
+        '</time><div>' + escapeHtml(holiday.name) + (holiday.local ? '<small>Festivo local</small>' : '') + '</div></li>').join("");
+    const vacationCount = [...state.vacationSelected].filter((date) => !holidayFor(date)).length;
     const changes = vacationDifferenceCount();
-    els.saveVacations.disabled = changes === 0;
+    els.saveVacations.disabled = changes === 0 || state.busy || state.loading || !state.fresh;
     els.calendarStatus.textContent = changes === 0
-      ? state.vacationSelected.size + " día(s) guardado(s)"
+      ? vacationCount + (vacationCount === 1 ? " día de vacaciones" : " días de vacaciones")
       : changes + (changes === 1 ? " cambio pendiente" : " cambios pendientes");
+    if (focusDate) els.calendarGrid.querySelector('[data-date="' + focusDate + '"]')?.focus({ preventScroll: true });
+  }
+
+  function holidayFor(date) {
+    return state.data.holidayCalendar.holidays.find((holiday) => holiday.date === date) || null;
   }
 
   function renderManual() {
     const data = state.data;
     const manual = data.manualDay;
     if (!manual) return;
+    const unavailable = Boolean(manual.vacation || manual.holiday || manual.calendarMissing || !manual.workday);
 
     const eventRows = EVENTS.map((definition) => {
       const manualValue = manual.manual?.[definition.event];
@@ -1592,12 +1924,20 @@ function clientApp() {
         '</span></div>' +
         (manualValue
           ? '<button type="button" class="smallButton" data-action="remove-manual" data-event="' +
-            escapeHtml(definition.event) + '">Quitar</button>'
+            escapeHtml(definition.event) + '" aria-label="Quitar marca manual: ' + escapeHtml(definition.label) + '">Quitar</button>'
           : "") + '</div>';
     }).join("");
 
-    const totalNotice = manual.vacation
+    const totalNotice = manual.holiday
+      ? '<div class="notice holiday">Festivo: <strong>' + escapeHtml(manual.holiday.name) + '</strong>. No se ficha este día.</div>'
+      : manual.calendarMissing
+        ? '<div class="notice test">Falta el calendario de festivos de este año. No se realizarán fichajes hasta actualizarlo.</div>'
+      : manual.vacation
       ? '<div class="notice test">Este día está marcado como vacaciones.</div>'
+      : !manual.workday
+        ? '<div class="notice test">Este día es fin de semana y no tiene jornada programada.</div>'
+      : manual.error
+        ? '<div class="notice pending">' + escapeHtml(manual.error) + '</div>'
       : manual.complete
         ? '<div class="notice ok">Total efectivo: <strong>' +
           formatDuration(manual.workedSeconds) + '</strong> · ajuste: <strong>' +
@@ -1619,22 +1959,30 @@ function clientApp() {
 
       '<section class="card"><h2 class="cardTitle">Pausar parcialmente</h2>' +
       '<p class="cardHint">Elige la primera marca que harás manualmente. Las anteriores continúan automáticas.</p>' +
-      '<form id="pauseForm"><div class="field"><label>Desde</label><select class="input" name="from_event">' +
+      '<form id="pauseForm"><div class="field"><label for="pauseEvent">Desde</label><select id="pauseEvent" class="input" name="from_event">' +
       EVENTS.map((definition) => '<option value="' + definition.event + '">' + escapeHtml(definition.label) + '</option>').join("") +
-      '</select></div><button class="button danger" style="width:100%;margin-top:12px">Pausar resto del día</button></form>' + pauseInfo + '</section>' +
+      '</select></div><button class="button danger" data-unavailable="' + unavailable + '" style="width:100%;margin-top:12px">Pausar resto del día</button></form>' + pauseInfo + '</section>' +
 
       '<section class="card"><h2 class="cardTitle">Registrar marca manual</h2>' +
-      '<form id="manualForm" class="formGrid two"><div class="field"><label>Evento</label><select class="input" name="event">' +
+      '<p class="cardHint">Anota una marca que ya has realizado. Este registro no envía un fichaje a Woffu.</p>' +
+      '<form id="manualForm" class="formGrid two"><div class="field"><label for="manualEvent">Evento</label><select id="manualEvent" class="input" name="event">' +
       EVENTS.map((definition) => '<option value="' + definition.event + '">' + escapeHtml(definition.label) + '</option>').join("") +
-      '</select></div><div class="field"><label>Hora real</label><input class="input" type="time" step="1" name="manual_time" required></div>' +
-      '<button class="button primary" style="width:100%;grid-column:1/-1">Guardar marca manual</button></form>' +
+      '</select></div><div class="field"><label for="manualTime">Hora real</label><input id="manualTime" class="input" type="time" step="1" name="manual_time" required></div>' +
+      '<button class="button primary" data-unavailable="' + unavailable + '" style="width:100%;grid-column:1/-1">Guardar marca manual</button></form>' +
       '<div class="manualList">' + eventRows + '</div><div style="margin-top:12px">' + totalNotice + '</div></section>';
   }
 
   function renderSettings() {
     const data = state.data;
-    const config = data.config;
+    const config = Object.assign({}, data.config, state.configDraft || {});
+    const dailyHours = Number(config.daily_hours || 8);
     const logs = data.logs || [];
+    const office = state.officeDraft ?? data.config.office ?? "";
+    const calendar = data.holidayCalendar;
+    const sourceLinks = calendar.sources.flatMap((source) => source.urls.map((url, index) =>
+      '<a href="' + escapeHtml(url) + '" target="_blank" rel="noreferrer">' + source.year + ' · Fuente oficial' +
+      (source.urls.length > 1 ? ' ' + (index + 1) : '') + '</a>'
+    )).join("");
 
     const logHtml = logs.length
       ? logs.map((log) => '<div class="log"><div><strong>' + escapeHtml(log.label) +
@@ -1644,16 +1992,31 @@ function clientApp() {
       : '<div class="muted">Todavía no hay ejecuciones.</div>';
 
     els.settings.innerHTML =
-      '<section class="card"><h2 class="cardTitle">Horario base</h2><p class="cardHint">Debe sumar 8 horas y mantener al menos una hora de descanso.</p>' +
+      '<section class="card"><h2 class="cardTitle">Oficina y festivos</h2>' +
+      '<p class="cardHint" id="officeHint">Elige la ciudad donde trabajas. Sus festivos se añaden al calendario y se excluyen de los fichajes y del objetivo semanal.</p>' +
+      '<form id="officeForm" class="formGrid"><div class="field"><label for="officeInput">Oficina</label>' +
+      '<select id="officeInput" class="input" name="office" required aria-describedby="officeHint">' +
+      '<option value="" disabled' + (!office ? ' selected' : '') + '>Selecciona tu oficina</option>' +
+      data.offices.map((item) => '<option value="' + item.id + '"' + (office === item.id ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>').join("") +
+      '</select></div><button class="button primary">Guardar oficina</button></form>' +
+      (calendar.office ? '<details class="calendarSources"><summary>Festivos verificados: ' + calendar.years.join(', ') + '</summary>' + sourceLinks + '</details>' : '') + '</section>' +
+      '<section class="card"><h2 class="cardTitle">Horario base</h2><p class="cardHint" id="scheduleHint">' + scheduleHint(dailyHours) + '</p>' +
       '<form id="configForm" class="formGrid two">' +
+      '<div class="field" style="grid-column:1/-1"><label for="dailyHoursInput">Jornada diaria</label>' +
+      '<select id="dailyHoursInput" class="input" name="daily_hours" aria-describedby="scheduleHint">' +
+      '<option value="8"' + (dailyHours === 8 ? ' selected' : '') + '>8 horas · con descanso</option>' +
+      '<option value="6"' + (dailyHours === 6 ? ' selected' : '') + '>6 horas · con descanso</option></select></div>' +
       timeField("Entrada mañana", "entry_am", config.entry_am) +
       timeField("Salida mediodía", "lunch_out", config.lunch_out) +
       timeField("Entrada mediodía", "lunch_in", config.lunch_in) +
       timeField("Salida tarde", "exit_pm", config.exit_pm) +
+      '<p class="cardHint" style="grid-column:1/-1;margin:0">Los minutos y segundos aleatorios se compensan durante la semana. Las vacaciones y los festivos se excluyen del objetivo. Al guardar se recalcula el plan con la jornada elegida.</p>' +
       '<button class="button primary" style="width:100%;grid-column:1/-1">Guardar horario</button></form></section>' +
-      '<section class="card"><h2 class="cardTitle">Automatización</h2><p class="cardHint">Estado global del cron.</p>' +
-      '<button class="button ' + (config.active ? "danger" : "success") + '" style="width:100%" data-action="toggle-active">' +
-      (config.active ? "Pausar automatización" : "Activar automatización") + '</button></section>' +
+      '<section class="card"><h2 class="cardTitle">Automatización</h2><p class="cardHint">Activa o pausa los fichajes programados.</p>' +
+      '<button class="button ' + (config.active ? "danger" : "primary") + '" style="width:100%" data-action="toggle-active">' +
+      (config.active ? "Pausar automatización" : data.automation.ready ? "Activar automatización" : "Configurar oficina") + '</button></section>' +
+      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La animación se muestra una vez por sesión. Puedes volver a verla aquí.</p>' +
+      '<button class="button secondary" type="button" data-action="replay-intro">Repetir animación</button></section>' +
       '<section class="card"><h2 class="cardTitle">Diagnóstico</h2>' +
       '<div class="manualList"><div class="manualItem"><div class="manualMain"><strong>Versión</strong><span>' +
       escapeHtml(data.version) + '</span></div></div><div class="manualItem"><div class="manualMain"><strong>Modo</strong><span>' +
@@ -1665,10 +2028,16 @@ function clientApp() {
   async function toggleActive(button = els.quickToggle) {
     if (!state.data || state.busy) return;
     const next = !state.data.config.active;
+    if (next && !state.data.automation.ready) {
+      setView("settings");
+      document.getElementById("officeInput")?.focus();
+      toast(state.data.automation.reason, true);
+      return;
+    }
     await runMutation(button, async () => {
       await api("/api/active", { method: "POST", body: { active: next } });
       state.data.config.active = next;
-      localStorage.setItem(CACHE_KEY, JSON.stringify(state.data));
+      cacheState();
       renderAll(false);
       toast(next ? "Automatización activada" : "Automatización pausada");
     });
@@ -1677,19 +2046,20 @@ function clientApp() {
   async function regenerateWeek(button) {
     await runMutation(button, async () => {
       await api("/api/regenerate", { method: "POST", body: { day: state.data.today } });
-      await loadData({ silent: true });
+      await loadData({ silent: true, throwOnError: true });
       toast("Plan semanal regenerado");
     });
   }
 
   async function saveVacations() {
+    const dates = Array.from(state.vacationSelected).sort();
     await runMutation(els.saveVacations, async () => {
       await api("/api/vacations", {
         method: "POST",
-        body: { dates: Array.from(state.vacationSelected).sort() },
+        body: { dates },
       });
-      state.vacationBaseline = new Set(state.vacationSelected);
-      await loadData({ silent: true });
+      state.vacationBaseline = new Set(dates);
+      await loadData({ silent: true, throwOnError: true });
       toast("Vacaciones guardadas");
     });
   }
@@ -1698,17 +2068,28 @@ function clientApp() {
     const values = Object.fromEntries(new FormData(form).entries());
     await runMutation(form.querySelector("button"), async () => {
       await api("/api/config", { method: "POST", body: values });
-      await loadData({ silent: true });
+      state.configDraft = null;
+      await loadData({ silent: true, throwOnError: true });
       toast("Horario actualizado");
+    });
+  }
+
+  async function saveOffice(form) {
+    const values = Object.fromEntries(new FormData(form).entries());
+    await runMutation(form.querySelector("button"), async () => {
+      await api("/api/office", { method: "POST", body: values });
+      state.officeDraft = null;
+      await loadData({ silent: true, throwOnError: true });
+      toast("Oficina y festivos actualizados");
     });
   }
 
   async function saveManual(form) {
     const values = Object.fromEntries(new FormData(form).entries());
-    values.day = state.manualDay;
+    values.day = state.data.manualDay.date;
     await runMutation(form.querySelector("button"), async () => {
       await api("/api/manual", { method: "POST", body: values });
-      await loadData({ manualDay: state.manualDay, silent: true });
+      await loadData({ manualDay: state.manualDay, silent: true, throwOnError: true });
       toast("Marca manual guardada");
     });
   }
@@ -1717,19 +2098,19 @@ function clientApp() {
     await runMutation(button, async () => {
       await api("/api/manual/delete", {
         method: "POST",
-        body: { day: state.manualDay, event: button.dataset.event },
+        body: { day: state.data.manualDay.date, event: button.dataset.event },
       });
-      await loadData({ manualDay: state.manualDay, silent: true });
+      await loadData({ manualDay: state.manualDay, silent: true, throwOnError: true });
       toast("Marca manual eliminada");
     });
   }
 
   async function savePause(form) {
     const values = Object.fromEntries(new FormData(form).entries());
-    values.day = state.manualDay;
+    values.day = state.data.manualDay.date;
     await runMutation(form.querySelector("button"), async () => {
       await api("/api/pause", { method: "POST", body: values });
-      await loadData({ manualDay: state.manualDay, silent: true });
+      await loadData({ manualDay: state.manualDay, silent: true, throwOnError: true });
       toast("Automatización parcial pausada");
     });
   }
@@ -1738,24 +2119,29 @@ function clientApp() {
     await runMutation(button, async () => {
       await api("/api/pause/clear", {
         method: "POST",
-        body: { day: state.manualDay },
+        body: { day: state.data.manualDay.date },
       });
-      await loadData({ manualDay: state.manualDay, silent: true });
+      await loadData({ manualDay: state.manualDay, silent: true, throwOnError: true });
       toast("Automatización del día reanudada");
     });
   }
 
   async function runMutation(button, task) {
-    if (state.busy) return;
+    if (state.busy || state.loading || !state.fresh) return;
     state.busy = true;
-    if (button) button.classList.add("loading");
     try {
+      button?.classList.add("loading");
+      button?.setAttribute("aria-busy", "true");
+      updatePendingControls();
+      document.getElementById("feedback").hidden = true;
       await task();
     } catch (error) {
       toast(error.message || "La operación ha fallado.", true);
     } finally {
       state.busy = false;
-      if (button) button.classList.remove("loading");
+      button?.classList.remove("loading");
+      button?.removeAttribute("aria-busy");
+      updatePendingControls();
     }
   }
 
@@ -1776,6 +2162,7 @@ function clientApp() {
   }
 
   function showLoading() {
+    els.home.classList.add("loadingScreen");
     els.home.innerHTML = '<div class="loadingScreen"><div class="loadingBlock skeleton"></div>' +
       '<div class="metrics"><div class="metric skeleton">.</div><div class="metric skeleton">.</div><div class="metric skeleton">.</div></div>' +
       '<div class="loadingBlock skeleton"></div></div>';
@@ -1788,11 +2175,14 @@ function clientApp() {
   }
 
   function toast(message, error = false) {
+    const feedback = document.getElementById("feedback");
+    feedback.hidden = !error;
+    if (error) document.getElementById("feedbackText").textContent = message;
     els.toast.textContent = message;
     els.toast.classList.toggle("error", error);
     els.toast.classList.add("show");
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => els.toast.classList.remove("show"), 2600);
+    toast.timer = setTimeout(() => els.toast.classList.remove("show"), error ? 6000 : 3000);
   }
 
   function metricHtml(label, value, extraClass) {
@@ -1800,8 +2190,42 @@ function clientApp() {
       '</div><div class="metricValue ' + extraClass + '">' + escapeHtml(value) + '</div></div>';
   }
 
+  function scheduleHint(dailyHours) {
+    return "Las cuatro marcas deben sumar " + dailyHours + " horas de trabajo y mantener al menos una hora de descanso.";
+  }
+
+  function updateScheduleFields(form) {
+    const dailyHours = Number(form.elements.daily_hours.value);
+    const dailyMinutes = dailyHours * 60;
+    const entry = form.elements.entry_am;
+    const exit = form.elements.exit_pm;
+    const lunchOut = form.elements.lunch_out;
+    const lunchIn = form.elements.lunch_in;
+    document.getElementById("scheduleHint").textContent = scheduleHint(dailyHours);
+
+    const minutes = (time) => {
+      if (!time) return NaN;
+      const parts = time.split(":").map(Number);
+      return parts[0] * 60 + parts[1];
+    };
+    const time = (value) => value >= 0 && value < 24 * 60
+      ? String(Math.floor(value / 60)).padStart(2, "0") + ":" + String(value % 60).padStart(2, "0")
+      : "";
+    const entryMinutes = minutes(entry.value);
+    if (!Number.isFinite(entryMinutes)) return;
+
+    if (!(minutes(lunchOut.value) > entryMinutes &&
+          minutes(lunchOut.value) < entryMinutes + dailyMinutes &&
+          minutes(lunchIn.value) - minutes(lunchOut.value) >= 60)) {
+      lunchOut.value = time(entryMinutes + dailyMinutes / 2);
+      lunchIn.value = time(entryMinutes + dailyMinutes / 2 + 60);
+    }
+    exit.value = time(entryMinutes + dailyMinutes + minutes(lunchIn.value) - minutes(lunchOut.value));
+  }
+
   function timeField(label, name, value) {
-    return '<div class="field"><label>' + escapeHtml(label) + '</label><input class="input" type="time" name="' +
+    return '<div class="field"><label for="config-' + escapeHtml(name) + '">' +
+      escapeHtml(label) + '</label><input id="config-' + escapeHtml(name) + '" class="input" type="time" name="' +
       escapeHtml(name) + '" value="' + escapeHtml(value) + '" required></div>';
   }
 
@@ -1858,11 +2282,16 @@ function assertSameOrigin(request, url) {
 }
 
 async function readJson(request) {
+  let body;
   try {
-    return await request.json();
+    body = await request.json();
   } catch {
     throw new HttpError(400, "El cuerpo de la petición no es JSON válido.");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "Se esperaba un objeto JSON.");
+  }
+  return body;
 }
 
 function isAuthorized(request, env) {
@@ -2080,8 +2509,8 @@ function manifestResponse() {
       short_name: "Woffu Clock",
       start_url: "/",
       display: "standalone",
-      background_color: "#f4f5f7",
-      theme_color: "#0b0d12",
+      background_color: "#ffffff",
+      theme_color: "#061c43",
       icons: [
         {
           src: "/icon.svg",

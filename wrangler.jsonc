@@ -4,6 +4,8 @@
   "main": "src/index-v11.js",
   "compatibility_date": "2026-08-26",
   "keep_vars": true,
+  // The inline client uses function.toString(); avoid external name helpers.
+  "keep_names": false,
   "secrets": {
     "required": [
       "ADMIN_PASSWORD",

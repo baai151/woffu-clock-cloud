@@ -675,8 +675,8 @@ Es la pantalla principal. Muestra:
 - El total semanal previsto.
 - El objetivo semanal.
 - Los días laborables de la semana actual.
-- Las cuatro marcas exactas de cada día, incluidos los segundos.
-- Vacaciones, pausas y ajustes manuales.
+- Las cuatro marcas exactas de cada día, incluidos los segundos, tanto para 6 como para 8 horas.
+- Vacaciones, festivos de oficina, pausas y ajustes manuales.
 
 Los botones principales son:
 
@@ -688,36 +688,47 @@ No pulses repetidamente **Regenerar semana** cuando la automatización real est�
 
 ### 11.2 Cómo se genera el horario
 
-El horario base tiene cuatro momentos:
+En **Ajustes → Horario base → Jornada diaria** puedes elegir:
+
+- **6 horas · con descanso:** seis horas de trabajo efectivo, por ejemplo `09:00–13:00` y `14:00–16:00`.
+- **8 horas · con descanso:** ocho horas de trabajo efectivo, por ejemplo `09:00–13:00` y `14:00–18:00`.
+
+Ambas jornadas son partidas y tienen los mismos cuatro momentos:
 
 1. Entrada mañana.
 2. Salida mediodía.
 3. Entrada mediodía.
 4. Salida tarde.
 
+Al cambiar la jornada, el formulario propone una salida que suma las horas elegidas. Revisa las horas y pulsa **Guardar horario** para aplicar el cambio a los planes. Las instalaciones existentes mantienen su jornada de 8 horas hasta que la cambies.
+
 La configuración debe cumplir:
 
-- Las cuatro horas están en orden cronológico.
-- El descanso de mediodía dura al menos una hora.
-- El horario base suma exactamente ocho horas de trabajo.
+- Las horas están en orden cronológico dentro del mismo día.
+- En ambas jornadas, el descanso de mediodía dura al menos una hora y no cuenta como tiempo trabajado.
+- El horario base suma exactamente la jornada elegida: seis u ocho horas de trabajo.
+- La salida base es como máximo a las `23:55`, para que los ajustes aleatorios no pasen al día siguiente.
 
 Al generar el plan:
 
 - Cada marca recibe un retraso aleatorio de `0` a `4 minutos y 59 segundos` respecto a su hora base.
 - Cada día puede desviarse hasta tres minutos del objetivo diario.
-- Las desviaciones se compensan para que el total semanal previsto conserve el objetivo de ocho horas por día laborable.
-- Un día de vacaciones no genera marcas y reduce el objetivo semanal en ocho horas.
+- Las desviaciones se compensan para que el total semanal previsto conserve el objetivo de seis u ocho horas por día laborable, según la jornada elegida.
+- Una semana de cinco días tiene un objetivo de 30 horas en jornada de 6 horas, o de 40 horas en jornada de 8 horas.
+- Un día de vacaciones o festivo no genera marcas y reduce el objetivo semanal en seis u ocho horas, según la jornada elegida. Si coinciden, se descuenta una sola vez. Con cuatro días no laborables, el único día laborable suma exactamente su objetivo; una semana entera no laborable suma cero.
 - La zona horaria usada por la aplicación es `Europe/Madrid`.
 
 Ejemplo: si la entrada base es `09:00`, una entrada planificada podría ser `09:03:27`.
 
-### 11.3 Vacaciones
+### 11.3 Calendario laboral: vacaciones y festivos
 
-En **Vacaciones**:
+Primero entra en **Ajustes → Oficina y festivos**, elige **Barcelona, Madrid o Sevilla** y pulsa **Guardar oficina**. Se incorporan los festivos nacionales, autonómicos y locales de esa ciudad para 2026 y 2027. Cambiar la oficina recalcula los planes y conserva las vacaciones y marcas manuales guardadas.
+
+En **Calendario**:
 
 1. Usa las flechas para cambiar de mes.
 2. Pulsa un día laborable para seleccionarlo o quitarlo.
-3. Los fines de semana están deshabilitados.
+3. Los festivos de oficina aparecen en **azul**, con su nombre en la lista del mes; las vacaciones seleccionadas aparecen en oscuro. La leyenda identifica ambos colores. Los fines de semana y los festivos no se pueden seleccionar como vacaciones.
 4. Pulsa **Guardar**.
 
 Al guardar, la aplicación recalcula los planes de las semanas afectadas. Un día marcado como vacaciones:
@@ -725,6 +736,10 @@ Al guardar, la aplicación recalcula los planes de las semanas afectadas. Un dí
 - No genera fichajes automáticos.
 - No cuenta en el objetivo semanal.
 - No admite marcas manuales desde la pantalla Manual.
+
+Los festivos tienen las mismas exclusiones y no consumen días de vacaciones. Unas vacaciones guardadas previamente que coincidan con un festivo se conservan por si cambias de oficina, pero se muestran como festivo y se descuentan una sola vez.
+
+No se asigna ninguna oficina por defecto. Hasta elegirla, la automatización y el envío real de fichajes quedan pendientes de configuración. Si se consulta un año sin calendario verificado, la app lo indica y no permite fichar en ese año. Las [fuentes oficiales y la actualización anual](OFFICE_HOLIDAYS.md) están documentadas; también puedes abrir las fuentes desde Ajustes.
 
 ### 11.4 Manual
 
@@ -745,13 +760,14 @@ Selecciona evento y hora real, y pulsa **Guardar marca manual**. La hora aparece
 
 > **Muy importante:** este botón no envía ningún fichaje a Woffu. Solo guarda en D1 que ese evento ya ha sido gestionado manualmente y hace que el scheduler no lo repita. Debes realizar el fichaje real en Woffu o mediante `TU_URL/woffu/punch` y después registrar el ajuste en esta pantalla si corresponde a un evento del plan.
 
-La aplicación comprueba que las horas efectivas mantengan el orden y un descanso mínimo de una hora.
+La aplicación comprueba que las cuatro horas efectivas mantengan el orden y un descanso mínimo de una hora en ambas jornadas. Los ajustes se calculan respecto a las seis u ocho horas de trabajo seleccionadas.
 
 ### 11.5 Ajustes
 
 En **Ajustes** encontrarás:
 
-- **Horario base:** las cuatro horas usadas para generar semanas.
+- **Oficina y festivos:** ciudad, calendario aplicado, años verificados y fuentes oficiales.
+- **Horario base:** el selector de jornada de 6 u 8 horas y sus horas de entrada y salida.
 - **Automatización:** el interruptor global Activa/Pausada.
 - **Diagnóstico:** versión, modo y momento de actualización.
 - **Últimas ejecuciones:** resultados guardados por el scheduler.
@@ -766,6 +782,8 @@ Guardar un nuevo horario base invalida los planes generados anteriormente para p
 | `SUCCESS` | Woffu aceptó el fichaje programado. |
 | `FAILED` | Se intentó el fichaje, pero ocurrió un error. Revisa el mensaje antes de hacer nada manualmente para evitar duplicados. |
 | `PENDING` | El evento empezó a procesarse y todavía no tiene resultado final. |
+
+Un fichaje real que figure como `SUCCESS`, `PENDING` o `FAILED` no se repite automáticamente, aunque regeneres el plan o cambies el horario. Los eventos se reservan antes de enviarse para evitar duplicados entre ejecuciones simultáneas. Si una petición falla o queda pendiente, comprueba primero el resultado en Woffu: una respuesta perdida no demuestra que el fichaje no se haya creado. La preparación del plan no registra simulaciones `TEST` cuando se va a ejecutar en `LIVE`.
 
 ---
 
@@ -786,10 +804,10 @@ woffuWriteEnabled: false
 
 1. Entra en `TU_URL/`.
 2. Abre **Ajustes**.
-3. Introduce cuatro horas que sumen ocho horas de trabajo y dejen al menos una hora de descanso.
+3. Elige la jornada de **6 horas · con descanso** u **8 horas · con descanso**. Introduce las cuatro horas para sumar la jornada elegida, dejando al menos una hora de descanso.
 4. Pulsa **Guardar horario**.
 
-Ejemplo válido:
+Ejemplo válido para 8 horas:
 
 ```text
 Entrada mañana:   09:00
@@ -798,13 +816,22 @@ Entrada mediodía: 14:00
 Salida tarde:     18:00
 ```
 
+Ejemplo válido para 6 horas:
+
+```text
+Entrada mañana:   09:00
+Salida mediodía:  13:00
+Entrada mediodía: 14:00
+Salida tarde:     16:00
+```
+
 ### Paso 12.3 — Preparar una prueba cercana
 
 Si quieres ver el scheduler sin esperar hasta el día siguiente:
 
 1. Espera a que hayan pasado al menos 15 minutos desde el primer despliegue del Worker. Los cambios de un Cron Trigger pueden tardar unos minutos en propagarse.
 2. Ajusta una de las horas base a un momento futuro razonablemente cercano.
-3. Mantén las reglas de ocho horas y una hora de descanso.
+3. Mantén la duración de la jornada elegida y al menos una hora de descanso.
 4. Guarda el horario.
 5. En **Resumen**, pulsa **Regenerar semana**.
 6. Anota la hora exacta generada para el siguiente evento.
@@ -935,7 +962,7 @@ Cuando la automatización está activa:
 Cloudflare despierta el Worker
 → usa la fecha y hora de Europe/Madrid
 → ignora sábados y domingos
-→ comprueba si el día es vacaciones
+→ comprueba la oficina, la cobertura anual y si el día es festivo o vacaciones
 → carga el plan del día
 → aplica pausas y marcas manuales
 → busca un evento dentro de ese minuto
@@ -945,7 +972,7 @@ Cloudflare despierta el Worker
 → guarda SUCCESS o FAILED en D1
 ```
 
-La aplicación genera las semanas siguientes cuando el scheduler o la webapp las necesita. No existe una fecha de finalización automática.
+La aplicación genera las semanas siguientes cuando el scheduler o la webapp las necesita. Para seguir fichando, debe existir un calendario de festivos verificado para el año correspondiente. Esta versión incluye 2026 y 2027; los años posteriores requieren actualizar los calendarios antes de permitir fichajes.
 
 ### Después del primer evento programado
 
@@ -1148,7 +1175,7 @@ Revisa en este orden:
 1. La webapp muestra **Activa**.
 2. `/health` muestra `mode: LIVE` y `woffuWriteEnabled: true`.
 3. El día es de lunes a viernes.
-4. El día no está marcado como vacaciones.
+4. El día no está marcado como vacaciones ni es festivo de la oficina; la oficina está seleccionada y hay calendario verificado para ese año.
 5. El evento no está cubierto por una pausa parcial.
 6. El evento no está registrado como manual.
 7. La hora exacta del plan todavía no ha pasado.
