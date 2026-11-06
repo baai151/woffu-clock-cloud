@@ -1,602 +1,300 @@
-# Guía completa desde cero — configurar Woffu Clock Cloud
+# Guía desde cero — configurar y usar Woffu Clock Cloud
 
-Esta guía está pensada para una persona sin experiencia técnica y explica todo el proceso usando únicamente el navegador. No necesitas saber programar, instalar Git, usar una terminal, comprar un dominio ni ejecutar SQL.
+Puedes seguir esta guía solo con el navegador. No necesitas programar, instalar aplicaciones, usar una terminal ni comprar un dominio.
 
-Al terminar tendrás:
+## Empieza por tu caso
 
-- Tu propia copia del proyecto en GitHub.
-- Una webapp desplegada en Cloudflare con una dirección `workers.dev`.
-- Una base de datos D1 independiente.
-- Tus contraseñas guardadas como secretos, fuera del código.
-- Un modo de prueba que no ficha en Woffu.
-- Una forma controlada de probar un fichaje y, solo después, la automatización.
-- Una explicación clara de cada pantalla y de cómo detener todo.
+| Tu situación | Por dónde empezar |
+| --- | --- |
+| Nunca he instalado esta aplicación | Sigue los apartados **1 a 10**, en orden. Terminarás con tu propia web en modo de prueba. |
+| Ya tengo mi copia funcionando y quiero las novedades | Ve directamente a [16. Actualizar mi copia](#16-actualizar-la-webapp-en-el-futuro). No crees otro Worker ni otra base de datos. |
+| Ya puedo entrar, pero no sé usarla | Abre [11. Uso de las pantallas](#11-cómo-se-usa-la-webapp). |
+| Quiero detener los fichajes | Ve a [15. Detener la automatización](#15-detener-la-automatización). Cerrar el navegador no los detiene. |
+| Algo no coincide con la guía | Consulta [17. Solución de problemas](#17-solución-de-problemas). |
 
-> **Uso autorizado y de prueba.** Utiliza únicamente una cuenta Woffu de pruebas o una cuenta para la que tengas autorización expresa. Los fichajes pueden formar parte de registros laborales. No actives escrituras reales hasta entender los tres interruptores explicados en esta guía.
+**Qué necesitas entender antes de empezar:** cada persona tendrá su propia copia, su propia dirección y su propia cuenta Woffu conectada. La web no tiene un registro de usuarios individuales: quien entra en una misma copia administra la misma cuenta y configuración.
 
-> **Nunca compartas contraseñas.** No escribas `ADMIN_PASSWORD`, `WOFFU_EMAIL` ni `WOFFU_PASSWORD` en GitHub, en el código, en capturas de pantalla, en incidencias públicas ni en mensajes.
+Durante la instalación usaremos `TEST` y `false`: podrás preparar el horario sin enviar fichajes. Activa escrituras únicamente con una cuenta para la que tengas autorización. Guarda las contraseñas en Cloudflare como se explica abajo; nunca en GitHub ni en mensajes.
+
+Los botones de GitHub y Cloudflare pueden aparecer en inglés. La guía conserva esos nombres y explica qué hacen. **`TU-USUARIO` y `TU_URL` son ejemplos para sustituir**, no textos que debas copiar literalmente.
 
 ## Índice
 
-1. [Qué vas a crear y cómo funciona](#1-qué-vas-a-crear-y-cómo-funciona)
-2. [Qué necesitas antes de empezar](#2-qué-necesitas-antes-de-empezar)
-3. [Crear una cuenta de GitHub](#3-crear-una-cuenta-de-github)
-4. [Crear tu copia del proyecto en GitHub](#4-crear-tu-copia-del-proyecto-en-github)
-5. [Crear una cuenta de Cloudflare](#5-crear-una-cuenta-de-cloudflare)
-6. [Crear el Worker, conectar GitHub y desplegar](#6-crear-el-worker-conectar-github-y-desplegar)
-7. [Comprobar la base de datos D1](#7-comprobar-la-base-de-datos-d1)
-8. [Configurar contraseñas y modo seguro](#8-configurar-contraseñas-y-modo-seguro)
-9. [Encontrar y abrir la dirección de la webapp](#9-encontrar-y-abrir-la-dirección-de-la-webapp)
-10. [Hacer las primeras comprobaciones sin fichar](#10-hacer-las-primeras-comprobaciones-sin-fichar)
-11. [Cómo se usa la webapp](#11-cómo-se-usa-la-webapp)
-12. [Probar el plan automático sin escribir en Woffu](#12-probar-el-plan-automático-sin-escribir-en-woffu)
-13. [Probar un único fichaje real de forma controlada](#13-probar-un-único-fichaje-real-de-forma-controlada)
-14. [Activar la automatización real](#14-activar-la-automatización-real)
-15. [Detener la automatización](#15-detener-la-automatización)
-16. [Actualizar la webapp en el futuro](#16-actualizar-la-webapp-en-el-futuro)
-17. [Solución de problemas](#17-solución-de-problemas)
+1. [Qué vas a crear](#1-qué-vas-a-crear-y-cómo-funciona)
+2. [Qué necesitas](#2-qué-necesitas-antes-de-empezar)
+3. [Crear cuenta en GitHub](#3-crear-una-cuenta-de-github)
+4. [Crear tu copia o fork](#4-crear-tu-copia-del-proyecto-en-github)
+5. [Crear cuenta en Cloudflare](#5-crear-una-cuenta-de-cloudflare)
+6. [Publicar tu aplicación](#6-crear-el-worker-conectar-github-y-desplegar)
+7. [Comprobar la base de datos](#7-comprobar-la-base-de-datos-d1)
+8. [Entender los controles de prueba y escritura](#8-configurar-contraseñas-y-modo-seguro)
+9. [Entrar y elegir tu oficina](#9-encontrar-y-abrir-la-dirección-de-la-webapp)
+10. [Comprobar que funciona sin fichar](#10-hacer-las-primeras-comprobaciones-sin-fichar)
+11. [Usar las pantallas](#11-cómo-se-usa-la-webapp)
+12. [Probar una simulación automática](#12-probar-el-plan-automático-sin-escribir-en-woffu)
+13. [Prueba real opcional](#13-probar-un-único-fichaje-real-de-forma-controlada)
+14. [Activar los fichajes automáticos](#14-activar-la-automatización-real)
+15. [Detenerlos](#15-detener-la-automatización)
+16. [Actualizar mi copia](#16-actualizar-la-webapp-en-el-futuro)
+17. [Resolver problemas](#17-solución-de-problemas)
 18. [Preguntas frecuentes](#18-preguntas-frecuentes)
-19. [Checklist final](#19-checklist-final)
-
----
+19. [Comprobación final](#19-checklist-final)
 
 ## 1. Qué vas a crear y cómo funciona
 
-La solución utiliza cuatro piezas:
+| Nombre que verás | Qué significa aquí |
+| --- | --- |
+| **GitHub** | La web donde se guardan los archivos del proyecto. |
+| **Repositorio** | La carpeta del proyecto dentro de GitHub. |
+| **Fork** | Tu copia de esa carpeta, dentro de tu cuenta. |
+| **Cloudflare Worker** | La aplicación publicada en Internet. Funciona aunque apagues tu ordenador. |
+| **Deploy / despliegue** | Publicar una versión de la aplicación. |
+| **Build** | El proceso que prepara y publica los archivos de GitHub en Cloudflare. |
+| **D1** | La base de datos que conserva tu horario, oficina, vacaciones y registros. |
+| **Secret** | Un valor privado, como una contraseña, que Cloudflare oculta después de guardarlo. |
+| **Cron / scheduler** | El proceso automático que comprueba el plan una vez por minuto. |
 
-| Pieza | Explicación sencilla | Qué guarda o hace |
-| --- | --- | --- |
-| GitHub | Una carpeta online con el código de la aplicación. | Guarda tu copia del proyecto y su historial. |
-| Cloudflare Worker | El ordenador en la nube que publica la webapp y ejecuta el reloj automático. | Sirve la web y revisa el plan una vez por minuto. |
-| Cloudflare D1 | La pequeña base de datos privada de tu copia. | Guarda horario, vacaciones, plan semanal, pausas y registros. |
-| Woffu | El servicio externo donde se crean los fichajes. | Recibe un fichaje únicamente cuando las escrituras reales están habilitadas. |
-
-El recorrido normal es:
-
-```text
-Tú configuras el horario en la webapp
-                ↓
-Cloudflare D1 guarda la configuración y el plan
-                ↓
-Cloudflare Cron revisa el plan cada minuto
-                ↓
-Si todos los controles permiten escribir, envía el fichaje a Woffu
-                ↓
-La webapp muestra el resultado en “Últimas ejecuciones”
-```
-
-### Conceptos que conviene conocer
-
-- **Repositorio:** conjunto de archivos del proyecto guardados en GitHub.
-- **Fork:** copia del repositorio dentro de tu propia cuenta de GitHub.
-- **Deploy o despliegue:** publicación de la aplicación en Cloudflare.
-- **Worker:** aplicación que Cloudflare ejecuta en Internet.
-- **D1:** base de datos de Cloudflare usada por esta aplicación.
-- **Secret:** valor cifrado cuyo contenido deja de ser visible después de guardarlo.
-- **Cron o scheduler:** reloj que despierta la aplicación cada minuto.
-- **Binding `DB`:** conexión entre el Worker y su base D1. El nombre debe ser exactamente `DB`.
-
-### No necesitas un dominio propio
-
-Cloudflare proporciona una dirección gratuita con este formato:
+Harás este recorrido:
 
 ```text
-https://woffu-clock-cloud.TU-SUBDOMINIO.workers.dev
+Crear tu copia en GitHub
+→ Conectarla a Cloudflare
+→ Abrir tu propia web
+→ Elegir oficina, jornada y vacaciones
+→ Comprobarla en modo de prueba
+→ Activar fichajes solo cuando quieras empezar
 ```
-
-La documentación oficial explica que `workers.dev` permite publicar un Worker sin añadir un dominio propio: [Cloudflare — workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/).
-
----
 
 ## 2. Qué necesitas antes de empezar
 
-Prepara lo siguiente:
-
 - Un correo electrónico al que puedas acceder.
-- Una cuenta Woffu de prueba autorizada.
-- El email y la contraseña de esa cuenta Woffu.
-- Una contraseña nueva y exclusiva para proteger la webapp.
-- Una sesión tranquila para hacer el proceso y las comprobaciones.
+- Tu cuenta Woffu y su contraseña, con permiso para utilizarla en esta aplicación.
+- Una contraseña nueva para proteger tu web. Guárdala en tu gestor de contraseñas.
 
-### Elige una contraseña de administración segura
+No confundas estas dos contraseñas:
 
-La contraseña que guardarás como `ADMIN_PASSWORD` protege la webapp. Debe ser distinta de tu contraseña de GitHub, Cloudflare y Woffu.
+| Contraseña | Para qué sirve |
+| --- | --- |
+| La de Woffu | Para que la aplicación se conecte a tu cuenta Woffu. |
+| La nueva de administración | Para entrar en tu propia web. La guardarás con el nombre `ADMIN_PASSWORD`. |
 
-Una buena contraseña:
-
-- Es larga.
-- Es única para esta webapp.
-- No contiene tu nombre, empresa o fechas fáciles de adivinar.
-- Se guarda en un gestor de contraseñas.
-
-### Si todavía no tienes acceso al repositorio
-
-El proyecto original está en:
-
-[Abrir `paubaaay/woffu-clock-cloud` en GitHub](https://github.com/paubaaay/woffu-clock-cloud)
-
-Si GitHub muestra **404**, **Not Found** o no permite hacer el fork, normalmente significa que el repositorio es privado o que todavía no tienes permiso. Pide al propietario que:
-
-1. Te invite al repositorio con tu usuario de GitHub.
-2. Permita crear forks si el repositorio es privado.
-3. Te avise cuando la invitación esté enviada.
-
-Después abre el email de GitHub y acepta la invitación antes de continuar.
-
----
+**Organiza el navegador:** deja esta guía en una pestaña y abre GitHub y Cloudflare en otras. Así podrás volver al paso que estabas siguiendo.
 
 ## 3. Crear una cuenta de GitHub
 
-GitHub guardará tu copia del código. Crear la cuenta no instala nada en tu ordenador.
+Si ya tienes cuenta y puedes entrar, pasa al apartado 4.
 
-### Paso 3.1 — Abrir el registro
+1. Abre [el registro de GitHub](https://github.com/signup).
+2. Sigue el formulario para crear una cuenta personal. Apunta tu nombre de usuario: lo usarás para reconocer tu copia.
+3. Verifica el correo cuando GitHub lo pida.
+4. Inicia sesión en [GitHub](https://github.com/).
 
-Abre:
-
-[Crear una cuenta gratuita de GitHub](https://github.com/signup)
-
-La guía oficial de GitHub está aquí:
-
-[GitHub Docs — Crear una cuenta](https://docs.github.com/es/account-and-profile/how-tos/account-management/creating-an-account-on-github)
-
-### Paso 3.2 — Completar los datos
-
-GitHub te pedirá normalmente:
-
-1. Tu correo electrónico.
-2. Una contraseña.
-3. Un nombre de usuario público.
-4. Tu país o región.
-5. Una comprobación para demostrar que eres una persona.
-
-El nombre de usuario formará parte de la dirección de tu copia. Por ejemplo:
-
-```text
-https://github.com/TU-USUARIO/woffu-clock-cloud
-```
-
-### Paso 3.3 — Verificar el correo
-
-1. Abre el mensaje que GitHub envía a tu correo.
-2. Pulsa el enlace de verificación.
-3. Vuelve a GitHub e inicia sesión.
-
-Sin verificar el correo, GitHub puede impedir acciones básicas como crear tu copia del repositorio.
-
-### Paso 3.4 — Proteger la cuenta
-
-GitHub recomienda activar la autenticación en dos pasos:
-
-[GitHub Docs — Configurar la autenticación en dos pasos](https://docs.github.com/es/authentication/securing-your-account-with-two-factor-authentication-2fa/configuring-two-factor-authentication)
-
-### Comprobación
-
-Este paso está terminado si puedes entrar en [github.com](https://github.com/) y ves tu avatar o icono de usuario en la esquina superior derecha.
-
----
+**Comprueba antes de seguir:** puedes abrir tu perfil y ves tu nombre de usuario. Crear la cuenta no instala nada en el ordenador. [Ayuda oficial para crear una cuenta](https://docs.github.com/es/account-and-profile/how-tos/account-management/creating-an-account-on-github).
 
 ## 4. Crear tu copia del proyecto en GitHub
 
-No trabajes directamente sobre el repositorio original. Un fork permite que cada persona tenga su propia copia y que Cloudflare despliegue esa copia por separado.
+1. Abre el [repositorio original `paubaaay/woffu-clock-cloud`](https://github.com/paubaaay/woffu-clock-cloud).
+2. Arriba a la derecha, pulsa **Fork**: significa crear tu copia.
+3. En **Owner** (propietario), elige tu cuenta. Mantén el nombre `woffu-clock-cloud`.
+4. Deja marcada **Copy the default branch only**, si aparece, y pulsa **Create fork**.
 
-La explicación oficial de GitHub está aquí:
-
-[GitHub Docs — Crear un fork de un repositorio](https://docs.github.com/es/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo)
-
-### Paso 4.1 — Abrir el proyecto original
-
-Abre:
-
-[Repositorio original de Woffu Clock Cloud](https://github.com/paubaaay/woffu-clock-cloud)
-
-### Paso 4.2 — Pulsar “Fork”
-
-1. Busca el botón **Fork** en la parte superior derecha.
-2. Púlsalo.
-3. En **Owner**, elige tu cuenta personal.
-4. Mantén el nombre `woffu-clock-cloud`.
-5. Puedes dejar marcada la opción **Copy the default branch only**.
-6. Pulsa **Create fork**.
-
-GitHub abrirá tu nueva copia cuando termine.
-
-### Paso 4.3 — Confirmar que la copia es tuya
-
-Comprueba que la dirección del navegador contiene tu usuario:
+**Comprueba antes de seguir:** la dirección contiene **tu usuario**, así:
 
 ```text
 https://github.com/TU-USUARIO/woffu-clock-cloud
 ```
 
-También deberías ver un texto parecido a:
+También debe aparecer `forked from paubaaay/woffu-clock-cloud`. Guarda esta página en favoritos: es donde actualizarás tu copia más adelante. No necesitas descargar archivos ni pulsar **Code**. [Ayuda oficial sobre forks](https://docs.github.com/es/pull-requests/how-tos/work-with-forks/fork-a-repo).
 
-```text
-forked from paubaaay/woffu-clock-cloud
-```
-
-### No necesitas descargar el repositorio
-
-Para seguir este tutorial no necesitas pulsar **Code**, clonar archivos, instalar Git ni usar GitHub Desktop. Cloudflare leerá directamente tu fork online.
-
----
+Si aparece **404 / Not Found**, confirma que has iniciado sesión. Si el proyecto requiere invitación, pide acceso al propietario y acepta el correo de GitHub antes de continuar.
 
 ## 5. Crear una cuenta de Cloudflare
 
-Cloudflare publicará la webapp y ejecutará la automatización aunque tu ordenador esté apagado.
+Si ya puedes entrar en Cloudflare, pasa al apartado 6.
 
-### Paso 5.1 — Abrir el registro
+1. Abre [el registro de Cloudflare](https://dash.cloudflare.com/sign-up).
+2. Crea la cuenta y verifica el correo si te lo pide.
+3. Entra en [el panel de Cloudflare](https://dash.cloudflare.com/) y selecciona tu cuenta.
+4. Busca **Workers & Pages**. Si te propone añadir un dominio, omite ese paso: este proyecto no lo necesita.
 
-Abre:
+Cloudflare ofrece niveles gratuitos con límites. Revisa las condiciones de [Workers](https://developers.cloudflare.com/workers/platform/pricing/) y [D1](https://developers.cloudflare.com/d1/platform/pricing/) al elegir el plan; no hace falta contratar un dominio para seguir la guía.
 
-[Crear una cuenta de Cloudflare](https://dash.cloudflare.com/sign-up)
-
-Guía oficial:
-
-[Cloudflare Docs — Crear una cuenta](https://developers.cloudflare.com/fundamentals/account/create-account/)
-
-### Paso 5.2 — Crear y verificar la cuenta
-
-1. Introduce tu correo y una contraseña segura.
-2. Pulsa **Create Account**.
-3. Abre el correo de verificación de Cloudflare.
-4. Confirma tu dirección.
-5. Inicia sesión en el [panel de Cloudflare](https://dash.cloudflare.com/).
-
-Cloudflare da acceso por defecto al plan Workers Free y D1 dispone de límites gratuitos. Si el panel ofrece varios planes, elige la opción gratuita para este entorno de prueba y revisa siempre las condiciones vigentes:
-
-- [Cloudflare Docs — Precio y límites de Workers](https://developers.cloudflare.com/workers/platform/pricing/)
-- [Cloudflare Docs — Precio y límites de D1](https://developers.cloudflare.com/d1/platform/pricing/)
-
-### No añadas una página web ni un dominio
-
-Si Cloudflare te pregunta por un dominio, puedes omitir ese paso. Este proyecto usa la dirección `workers.dev` y no necesita cambiar DNS.
-
-### Comprobación
-
-Este paso está terminado si puedes abrir el panel de Cloudflare y seleccionar tu cuenta.
-
----
+**Comprueba antes de seguir:** puedes abrir **Workers & Pages** dentro de tu cuenta.
 
 ## 6. Crear el Worker, conectar GitHub y desplegar
 
-Cloudflare permite importar un repositorio al crear un Worker. Sin embargo, este proyecto declara tres secretos obligatorios y Wrangler comprueba que ya existan antes de aceptar el despliegue. Para evitar un primer build fallido, la secuencia más sencilla es:
+Primero crearemos una aplicación básica, guardaremos sus contraseñas y después conectaremos tu fork. Este orden evita que el primer despliegue falle por no tener todavía los secretos obligatorios.
 
-```text
-Crear un Worker vacío con el nombre correcto
-→ guardar en él los secretos obligatorios
-→ conectar ese Worker a tu fork
-→ desplegar el código definitivo
-```
+### 6.1 Crear el Worker básico
 
-Cloudflare documenta tanto la creación de un Worker nuevo como la conexión de un Worker existente:
+En **Cloudflare**:
 
-[Cloudflare Docs — Conectar un repositorio a Workers](https://developers.cloudflare.com/workers/ci-cd/builds/)
+1. Abre **Workers & Pages → Create application**.
+2. Elige **Start with Hello World! → Get started**, o la opción equivalente de Worker básico.
+3. Pon exactamente este nombre: `woffu-clock-cloud`.
+4. Pulsa **Deploy** (publicar). Cuando termine, abre el proyecto.
 
-También documenta la validación previa de los secretos declarados como obligatorios:
+Ver **Hello World** en esta fase es normal: todavía no has publicado Woffu Clock. La [guía de Cloudflare](https://developers.cloudflare.com/d1/get-started/) muestra esta creación desde el panel.
 
-[Cloudflare Docs — Propiedad `secrets.required`](https://developers.cloudflare.com/workers/wrangler/configuration/#secrets-configuration-property)
+El nombre debe coincidir con el que lleva el proyecto. No añadas tu usuario ni cambies `woffu-clock-cloud`: la dirección será distinta gracias al subdominio de tu cuenta.
 
-### Paso 6.1 — Crear primero un Worker vacío
+### 6.2 Guardar las contraseñas y el modo de prueba
 
-1. Entra en el [panel de Cloudflare](https://dash.cloudflare.com/).
-2. Elige tu cuenta si aparece una lista.
-3. En el menú, entra en **Workers & Pages**.
-4. Pulsa **Create application**.
-5. Busca **Start with Hello World!** y pulsa **Get started**.
-6. En el nombre escribe exactamente:
+Dentro de ese Worker, abre **Settings → Variables and Secrets**. No uses **Build variables and secrets**: esa sección no configura los valores que necesita la aplicación al funcionar.
 
-   ```text
-   woffu-clock-cloud
-   ```
+Pulsa **Add** y añade estas cinco filas. Copia los nombres exactamente, incluidas las mayúsculas:
 
-7. Pulsa **Deploy**.
-8. Cuando termine, pulsa **Continue to project** o vuelve a **Workers & Pages** y abre `woffu-clock-cloud`.
-
-Este “Hello World” es solo una base temporal. El código definitivo lo sustituirá al conectar GitHub.
-
-> **El nombre es obligatorio.** Debe coincidir con el campo `name` de `wrangler.jsonc`. No añadas tu usuario, espacios, mayúsculas ni otro sufijo.
-
-Cloudflare cambia ocasionalmente los textos de sus pantallas. Si no ves exactamente esas palabras, busca la opción equivalente a **crear un Worker básico** o **empezar con Hello World**.
-
-### Paso 6.2 — Guardar los valores obligatorios
-
-Dentro del Worker vacío abre:
-
-```text
-Settings
-→ Variables and Secrets
-```
-
-Pulsa **Add** y crea:
-
-| Nombre exacto | Tipo | Valor |
+| Nombre / Variable name | Tipo / Type | Valor / Value que debes introducir |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | Secret | Tu contraseña nueva para la webapp. |
-| `WOFFU_EMAIL` | Secret | Email de la cuenta Woffu de prueba. |
-| `WOFFU_PASSWORD` | Secret | Contraseña de la cuenta Woffu de prueba. |
-| `MODE` | Text o Plaintext | `TEST` |
-| `WOFFU_WRITE_ENABLED` | Text o Plaintext | `false` |
+| `ADMIN_PASSWORD` | **Secret** | La contraseña nueva que elegiste para entrar en tu web. |
+| `WOFFU_EMAIL` | **Secret** | Tu email de Woffu. |
+| `WOFFU_PASSWORD` | **Secret** | Tu contraseña de Woffu. |
+| `MODE` | **Text** o **Plaintext** | `TEST` |
+| `WOFFU_WRITE_ENABLED` | **Text** o **Plaintext** | `false` |
 
-1. Revisa que los cinco nombres sean exactos.
-2. Pulsa **Deploy**, **Save and Deploy** o el botón equivalente.
-3. Espera a que Cloudflare aplique los cambios.
+Para cada fila, elige el tipo, escribe el nombre y pega el valor. Usa **Add variable** para añadir otra si aparece. Finalmente pulsa **Deploy** o **Save and Deploy** y espera a que se aplique.
 
-Los tres primeros deben ser **Secret**, nunca texto visible. El [apartado 8](#8-configurar-contraseñas-y-modo-seguro) explica cada valor y los controles de escritura con más detalle.
+Escribe `TEST` y `false` sin comillas. En las tres primeras filas debes escribir **tus valores reales**, no el texto explicativo de la tabla. Los secretos quedan ocultos al guardarlos; es normal que ya no puedas leerlos. [Ayuda oficial sobre secretos](https://developers.cloudflare.com/workers/configuration/secrets/#via-the-dashboard).
 
-### Paso 6.3 — Abrir la conexión con GitHub
+**Comprueba antes de seguir:** aparecen los cinco nombres y los tres primeros tienen tipo **Secret**. El proyecto exige esos tres secretos antes de desplegar su código. [Validación de secretos obligatorios](https://developers.cloudflare.com/workers/wrangler/configuration/#secrets-configuration-property).
 
-1. Continúa dentro de `Workers & Pages → woffu-clock-cloud`.
-2. Abre **Settings**.
-3. Entra en **Builds**.
-4. En **Git Repository**, pulsa **Connect**.
-5. Elige **GitHub**.
+### 6.3 Conectar tu fork
 
-Esta es la ruta indicada por Cloudflare para conectar un Worker ya existente.
+En **Cloudflare**, dentro de `woffu-clock-cloud`:
 
-### Paso 6.4 — Autorizar GitHub y elegir tu fork
+1. Abre **Settings → Builds → Connect** y elige **GitHub**.
+2. Si pide autorización, entra en GitHub. En **Only select repositories**, selecciona solo **tu** `woffu-clock-cloud` y confirma.
+3. De vuelta en Cloudflare, elige tu fork. Revisa el propietario: debe ser **tu usuario**, no `paubaaay`.
+4. Completa los campos con esta tabla:
 
-La primera vez, Cloudflare pedirá permiso para acceder a GitHub:
-
-1. Inicia sesión en GitHub si se solicita.
-2. Autoriza la aplicación **Cloudflare Workers and Pages**.
-3. Si GitHub permite elegir entre todos los repositorios o solo algunos, selecciona **Only select repositories**.
-4. Marca únicamente `TU-USUARIO/woffu-clock-cloud`.
-5. Confirma la autorización.
-6. De vuelta en Cloudflare, selecciona tu cuenta de GitHub.
-7. Busca `woffu-clock-cloud`.
-8. Verifica que el propietario es tu usuario, no el propietario original.
-9. Selecciona el repositorio.
-
-Dar acceso solo al repositorio necesario reduce el alcance del permiso.
-
-Si el fork no aparece, abre [las aplicaciones instaladas de GitHub](https://github.com/settings/installations), entra en **Cloudflare Workers and Pages** y añade ese repositorio.
-
-### Paso 6.5 — Revisar la configuración del build
-
-Usa estos valores:
-
-| Campo de Cloudflare | Valor |
+| Campo | Qué poner |
 | --- | --- |
-| Worker ya creado | `woffu-clock-cloud` |
-| Rama de producción | `main` |
-| Directorio raíz | Vacío o `/` |
-| Comando de build | Vacío |
-| Comando de deploy | `npx wrangler deploy` |
+| Rama / Git branch / Production branch | `main` |
+| Directorio raíz / Root directory | Déjalo vacío o con `/`. |
+| Build command | Déjalo vacío. |
+| Deploy command | `npx wrangler deploy` |
 
-No necesitas crear un token de API manual: la integración de Cloudflare puede generar el necesario para sus builds.
+`npx wrangler deploy` se pega **en ese campo de Cloudflare**. No tienes que abrir una terminal. Si aparece un campo de token de API, conserva la opción automática de Cloudflare. [Configuración oficial de Builds](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
 
-Referencia oficial de estos campos:
+5. Guarda la conexión. Si ofrece **Save and Deploy** o **Trigger build**, úsalo para iniciar la publicación.
 
-[Cloudflare Docs — Configuración de Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+### 6.4 Solo si no empieza ningún build
 
-Guarda la conexión y la configuración.
+Conectar un Worker existente puede requerir un cambio nuevo en GitHub para iniciar su primer build. [Conexión de un Worker existente](https://developers.cloudflare.com/workers/ci-cd/builds/#connect-an-existing-worker).
 
-### Paso 6.6 — Iniciar el primer build del repositorio
+Si ya ves un build en marcha, **salta al paso 6.5**. En caso contrario, en **tu fork de GitHub**:
 
-Si Cloudflare ofrece **Save and Deploy**, **Trigger build** o inicia un build automáticamente, úsalo y pasa al paso siguiente.
+1. Confirma que estás en la rama `main`, en el selector situado sobre la lista de archivos.
+2. Pulsa **Add file → Create new file**.
+3. Como nombre, escribe `inicio-cloudflare.txt`.
+4. En el contenido, escribe `Inicio del despliegue de mi copia.` No pongas datos personales ni contraseñas.
+5. Pulsa **Commit changes** (guardar el cambio), elige guardarlo directamente en `main` y confirma.
 
-Si solo guarda la conexión y no empieza ningún build, haz un commit inofensivo desde el navegador:
+Ese pequeño archivo solo sirve para iniciar el build. No cambia la aplicación ni obliga a modificar el código o este tutorial.
 
-1. Abre tu fork `https://github.com/TU-USUARIO/woffu-clock-cloud`.
-2. Abre el archivo `README.md`.
-3. Pulsa el icono del lápiz **Edit this file**.
-4. Al final del archivo añade esta línea:
+### 6.5 Esperar a que termine
 
-   ```html
-   <!-- Activar primer despliegue de Cloudflare -->
-   ```
+En **Cloudflare → Workers & Pages → woffu-clock-cloud → Deployments**, abre **View build history** si aparece.
 
-5. Pulsa **Commit changes**.
-6. Mantén la opción de guardar directamente en la rama `main`.
-7. Confirma de nuevo con **Commit changes**.
-
-Este comentario no cambia cómo funciona ni cómo se ve la aplicación. Su único objetivo es crear el primer cambio que Cloudflare detectará. Los cambios futuros en `main` también iniciarán un despliegue automático.
-
-### Paso 6.7 — Esperar y comprobar el despliegue
-
-1. Vuelve a `Workers & Pages → woffu-clock-cloud → Deployments`.
-2. Abre **View build history** si aparece.
-3. Espera a que termine el build de `main`.
-4. Abre el detalle si Cloudflare muestra un error.
-
-El resultado correcto debe indicar **Success**, **Succeeded** o un estado verde equivalente. El Worker definitivo habrá sustituido al “Hello World”.
-
-### Qué ocurre durante este primer despliegue
-
-El repositorio ya contiene:
-
-- El código de la aplicación.
-- El comando y la versión de Wrangler.
-- El cron `* * * * *`, que se ejecuta cada minuto.
-- Un binding D1 llamado `DB`.
-- La configuración para conservar variables del panel en futuros despliegues.
-
-Como el binding D1 está declarado sin un identificador fijo, Wrangler puede crear automáticamente una base independiente para tu Worker. Cloudflare documenta este comportamiento como **Automatic provisioning**:
-
-[Cloudflare Docs — Aprovisionamiento automático de recursos](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning)
-
-Cloudflare todavía identifica este aprovisionamiento automático como **Beta**. Por eso el apartado siguiente obliga a comprobar el binding y ofrece una alternativa manual. No ejecutes SQL: la aplicación crea sus propias tablas al abrirse por primera vez.
-
----
+**Comprueba antes de seguir:** el build de `main` termina con **Success / Succeeded** y la versión queda publicada como despliegue activo. Si pone **Failed**, abre el detalle y consulta el [apartado 17](#17-solución-de-problemas); no sigas como si hubiera terminado bien.
 
 ## 7. Comprobar la base de datos D1
 
-D1 guarda la configuración y los registros de tu copia. No contiene las contraseñas de Woffu: esas se guardarán aparte como secretos del Worker.
+En **Cloudflare → Workers & Pages → woffu-clock-cloud → Bindings**, busca una conexión de tipo **D1 database** con nombre de variable **`DB`**.
 
-### Paso 7.1 — Comprobar el binding
+`DB` es el nombre de la conexión; la base asociada puede tener otro nombre. El proyecto permite que Cloudflare la cree automáticamente al desplegar. [Cómo funciona la creación automática](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning).
 
-1. En **Workers & Pages**, abre `woffu-clock-cloud`.
-2. Entra en **Bindings**. En algunas versiones del panel está dentro de **Settings**.
-3. Busca una conexión de tipo **D1 database**.
-4. Confirma que el nombre de variable o binding es exactamente:
+**Si ya existe `DB` y tiene una base seleccionada, sigue al apartado 8.** No crees otra base.
 
-```text
-DB
-```
+Solo si falta:
 
-### Paso 7.2 — Comprobar que existe la base
+1. Abre **D1 SQL database → Create database** en Cloudflare.
+2. Escribe un nombre, por ejemplo `woffu-clock-db`, y pulsa **Create**.
+3. Vuelve al Worker → **Bindings → Add binding → D1 database**.
+4. En **Variable name**, escribe `DB`. Selecciona la base recién creada.
+5. Guarda y aplica el despliegue si lo solicita. [Ayuda oficial sobre la conexión D1](https://developers.cloudflare.com/d1/get-started/#3-bind-your-worker-to-your-d1-database).
 
-También puedes abrir la sección **D1 SQL database** de Cloudflare. Deberías ver una base asociada al Worker. El nombre exacto puede haber sido generado automáticamente.
-
-Documentación oficial:
-
-[Cloudflare Docs — Crear y conectar una base D1](https://developers.cloudflare.com/d1/get-started/)
-
-### Solo si Cloudflare no la ha creado automáticamente
-
-Haz esta alternativa únicamente si el despliegue terminó pero no existe ningún binding `DB`:
-
-1. Abre **D1 SQL database** en Cloudflare.
-2. Pulsa **Create database**.
-3. Pon un nombre sencillo, por ejemplo `woffu-clock-db-tu-nombre`.
-4. Vuelve a `Workers & Pages → woffu-clock-cloud → Bindings`.
-5. Pulsa **Add binding**.
-6. Elige **D1 database**.
-7. En **Variable name**, escribe exactamente `DB`.
-8. Selecciona la base que acabas de crear.
-9. Guarda y despliega la nueva versión si Cloudflare lo solicita.
-
-No cambies `DB` por el nombre de la base. `DB` es el nombre que utiliza el código para encontrarla.
-
----
+No copies una base ni un identificador de otra persona. La aplicación crea sus propias tablas: no necesitas usar **Console**, ejecutar SQL ni seguir los ejemplos de tablas de la documentación de Cloudflare.
 
 ## 8. Configurar contraseñas y modo seguro
 
-Ya añadiste estos valores antes de conectar GitHub, porque el repositorio declara los tres secretos como obligatorios para desplegar. Esta sección sirve para revisarlos y entender qué controla cada uno.
+Los cinco valores ya quedaron guardados en el paso 6.2. Este apartado explica qué hacen; no tienes que volver a crearlos.
 
-Todos deben ser valores de **ejecución** del Worker. No los añadas únicamente en **Build variables and secrets**, porque esos valores solo existen durante el build y la aplicación no podría leerlos cuando está funcionando.
+| Situación | `MODE` en Cloudflare | `WOFFU_WRITE_ENABLED` en Cloudflare | Automatización en la web |
+| --- | --- | --- | --- |
+| Preparar y revisar la aplicación | `TEST` | `false` | Desactivada / Pausada |
+| Simular el plan sin fichar | `TEST` | `false` | Activa |
+| Permitir fichajes automáticos reales | `LIVE` | `true` | Activa |
 
-La ruta habitual es:
+Los valores se cambian en **Cloudflare → tu Worker → Settings → Variables and Secrets**. Después hay que pulsar **Deploy** para aplicarlos.
 
-```text
-Workers & Pages
-→ woffu-clock-cloud
-→ Settings
-→ Variables and Secrets
-```
+**Activa no significa necesariamente que esté fichando:** en `TEST` solo simula. Además, la oficina debe estar guardada y el día debe ser laborable, sin vacaciones ni festivo. Las pausas y marcas manuales también se respetan.
 
-Guía oficial:
-
-[Cloudflare Docs — Variables y secretos](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard)
-
-### Paso 8.1 — Revisar los tres secretos
-
-Confirma que existen estos valores con tipo **Secret**. Si falta alguno, pulsa **Add** y créalo:
-
-| Nombre exacto | Contenido | Para qué sirve |
-| --- | --- | --- |
-| `ADMIN_PASSWORD` | Una contraseña nueva y exclusiva. | Protege el acceso a la webapp. |
-| `WOFFU_EMAIL` | Email de la cuenta Woffu de prueba. | Permite iniciar sesión en Woffu. |
-| `WOFFU_PASSWORD` | Contraseña de esa cuenta Woffu. | Permite iniciar sesión en Woffu. |
-
-Respeta mayúsculas, guiones bajos y nombres exactos.
-
-Cloudflare ocultará el contenido de un secreto después de guardarlo. Si más adelante no recuerdas qué valor pusiste, tendrás que reemplazarlo por uno nuevo.
-
-### Paso 8.2 — Revisar las dos variables de seguridad
-
-Confirma que existen estos valores con tipo **Text** o **Plaintext**:
-
-| Nombre exacto | Valor inicial exacto |
-| --- | --- |
-| `MODE` | `TEST` |
-| `WOFFU_WRITE_ENABLED` | `false` |
-
-### Paso 8.3 — Aplicar los cambios
-
-1. Revisa los cinco nombres.
-2. Pulsa **Deploy**, **Save and Deploy** o el botón equivalente.
-3. Espera a que Cloudflare confirme la nueva versión.
-
-### Qué significan los dos valores iniciales
-
-```text
-MODE = TEST
-WOFFU_WRITE_ENABLED = false
-```
-
-Es la configuración segura. El plan y el scheduler pueden probarse, pero no se envía ningún fichaje a Woffu.
-
-### Los tres controles de escritura
-
-Un fichaje **programado** solo puede salir cuando coinciden estas tres condiciones:
-
-| Control | Dónde se cambia | Valor que permite el fichaje programado |
-| --- | --- | --- |
-| Modo | Cloudflare | `MODE = LIVE` |
-| Permiso técnico de escritura | Cloudflare | `WOFFU_WRITE_ENABLED = true` |
-| Interruptor de automatización | Webapp | `Automatización = Activa` |
-
-La página manual `/woffu/punch` necesita los dos controles de Cloudflare, pero no depende del interruptor de automatización de la webapp.
-
----
+La página especial `/woffu/punch` puede enviar una marca con `LIVE` y `true` aunque la automatización esté pausada. Se explica por separado en el [apartado 13](#13-probar-un-único-fichaje-real-de-forma-controlada).
 
 ## 9. Encontrar y abrir la dirección de la webapp
 
-### Paso 9.1 — Copiar la dirección
+### 9.1 Encontrar tu dirección
 
-1. Abre `Workers & Pages → woffu-clock-cloud`.
-2. Busca **Domains & Routes**, **Visit**, **workers.dev** o la URL del despliegue activo.
-3. Copia la dirección de producción, parecida a:
+En **Cloudflare → Workers & Pages → woffu-clock-cloud**, busca **Visit**, **Domains & Routes** o la dirección terminada en **workers.dev**. Copia la del despliegue activo, no una vista previa de otra rama.
+
+Tendrá una forma parecida a esta:
 
 ```text
 https://woffu-clock-cloud.TU-SUBDOMINIO.workers.dev
 ```
 
-En esta guía la llamaremos:
+Guárdala en favoritos. **Es tu web personal; no debes usar la dirección de otra persona del equipo.**
+
+En el resto de la guía, `TU_URL` significa esa dirección completa. Por ejemplo, si tu dirección ficticia fuera `https://woffu-clock-cloud.ejemplo.workers.dev`, para consultar `TU_URL/health` añadirías `/health` al final:
 
 ```text
-TU_URL
+https://woffu-clock-cloud.ejemplo.workers.dev/health
 ```
 
-Cuando veas `TU_URL/health`, debes sustituir solo `TU_URL` por tu dirección real. No escribas literalmente `TU_URL` en el navegador.
+El ejemplo no es una web para entrar: utiliza la dirección que acabas de copiar de Cloudflare.
 
-### Paso 9.2 — Abrir la webapp
+### 9.2 Entrar
 
-Abre `TU_URL/`.
+Abre tu dirección. En la ventana de identificación del navegador, escribe:
 
-El navegador mostrará una pequeña ventana de usuario y contraseña. Introduce:
+| Campo | Valor |
+| --- | --- |
+| Usuario | `admin` |
+| Contraseña | La que guardaste como `ADMIN_PASSWORD`. |
 
-```text
-Usuario: admin
-Contraseña: el valor que guardaste en ADMIN_PASSWORD
-```
+No uses el email ni la contraseña de Woffu para entrar en esta ventana.
 
-El usuario siempre es `admin`. No es tu usuario de GitHub, Cloudflare ni Woffu.
+La primera carga prepara la base de datos. En una instalación nueva, la automatización empieza desactivada. Puedes ver **Configurar** o **Pendiente** mientras falte la oficina; una actualización conserva el estado que ya tenías.
 
-### Qué ocurre la primera vez
+### 9.3 Elegir tu oficina antes de continuar
 
-Al cargar los datos, la aplicación crea automáticamente en D1 las tablas que necesita. No hace falta importar una base ni ejecutar scripts.
+En **tu web**:
 
-La automatización comienza en estado **Pausada** por defecto, aunque el cron de Cloudflare ya exista.
+1. Abre **Ajustes → Oficina y festivos**.
+2. Selecciona **Barcelona**, **Madrid** o **Sevilla**.
+3. Pulsa **Guardar oficina**.
+4. Comprueba que aparece tu ciudad y desaparece el aviso de elegir oficina.
 
----
+Se cargarán los festivos nacionales, autonómicos y locales de esa ciudad. **Sin oficina guardada no funciona ni la simulación automática ni el envío real.** En una copia nueva, guardar la oficina no activa la automatización por sí solo.
+
+Si ves **Pausar automatización**, el interruptor está activado: púlsalo para preparar la configuración con calma. Déjala en **Pausada** para las comprobaciones siguientes.
 
 ## 10. Hacer las primeras comprobaciones sin fichar
 
-Mantén durante toda esta sección:
+Mantén `MODE = TEST`, `WOFFU_WRITE_ENABLED = false` y la automatización **Pausada**.
 
-```text
-MODE = TEST
-WOFFU_WRITE_ENABLED = false
-Automatización = Pausada
-```
+### 10.1 Ver que la web carga
 
-### Comprobación 10.1 — Estado técnico
+En tu web deben aparecer **Resumen**, **Calendario**, **Manual** y **Ajustes**. Comprueba que la oficina es la tuya y que se ve **Modo TEST**.
 
-Abre:
+### 10.2 Comprobar el estado técnico
 
-```text
-TU_URL/health
-```
-
-Deberías ver un resultado parecido a:
+En otra pestaña abre `TU_URL/health`. Verás texto con llaves y comillas: es normal, es una pantalla de diagnóstico. Busca estos valores; puede haber más líneas:
 
 ```json
 {
   "ok": true,
-  "app": "woffu-clock-cloud",
-  "version": "3.3.0-scheduled-woffu-test",
   "mode": "TEST",
   "woffuCredentialsConfigured": true,
   "woffuWriteEnabled": false,
@@ -605,705 +303,277 @@ Deberías ver un resultado parecido a:
 }
 ```
 
-Significado:
+- `ok: true`: la aplicación responde.
+- `woffuCredentialsConfigured: true`: existen email y contraseña; todavía no comprueba si son correctos.
+- Los tres valores de escritura en `false`: las escrituras están deshabilitadas.
 
-- `ok: true`: el Worker responde.
-- `mode: "TEST"`: está en simulación.
-- `woffuCredentialsConfigured: true`: Cloudflare encuentra email y contraseña de Woffu. No significa todavía que sean correctos.
-- `woffuWriteEnabled: false`: el permiso técnico de escritura está cerrado.
-- `liveManualPunchReady: false`: la página de fichaje manual no puede escribir.
-- `scheduledWoffuWritesEnabled: false`: la puerta técnica del scheduler está cerrada.
+Esta dirección es pública, no muestra contraseñas y **no comprueba por sí sola la base de datos, la oficina ni la conexión con Woffu**. Por eso también hacemos las comprobaciones 10.1 y 10.3. La línea `version`, si aparece, puede cambiar con las actualizaciones.
 
-> `/health` es un diagnóstico público y no pide la contraseña de administración. No muestra tus secretos. Además, `scheduledWoffuWritesEnabled` refleja solo los dos controles de Cloudflare; para una ejecución programada también debe aparecer **Activa** dentro de la webapp.
+### 10.3 Comprobar la conexión con Woffu sin fichar
 
-### Comprobación 10.2 — Acceso a la webapp
+Abre `TU_URL/api/woffu/test`. Si pide identificación, usa `admin` y `ADMIN_PASSWORD`.
 
-Abre:
+El resultado correcto incluye `"ok": true`, `"connection": "success"` y el mensaje **«Autenticación y lecturas verificadas. No se ha creado ningún fichaje.»**
 
-```text
-TU_URL/
-```
+Si falla, ve al [apartado 17](#17-solución-de-problemas). Esta comprobación inicia sesión y consulta datos en Woffu, pero no crea marcas.
 
-Confirma que:
-
-- Acepta el usuario `admin` y tu `ADMIN_PASSWORD`.
-- Aparece **Woffu Clock**.
-- El estado inicial es **Pausada**.
-- Aparece el aviso **Modo TEST**.
-- Ves las pestañas **Resumen**, **Vacaciones**, **Manual** y **Ajustes**.
-
-### Comprobación 10.3 — Conexión de lectura con Woffu
-
-Abre:
-
-```text
-TU_URL/api/woffu/test
-```
-
-Puede volver a pedir el usuario `admin` y la contraseña de administración. Esta URL:
-
-1. Inicia sesión en Woffu con los secretos.
-2. Obtiene el identificador del usuario y de la empresa.
-3. Consulta el dominio Woffu de la empresa.
-4. No crea ningún fichaje.
-
-El resultado correcto contiene:
-
-```json
-{
-  "ok": true,
-  "connection": "success",
-  "message": "Autenticación y lecturas verificadas. No se ha creado ningún fichaje."
-}
-```
-
-Los identificadores aparecen parcialmente ocultos.
-
-Si esta comprobación falla, no actives `LIVE`. Ve a [Solución de problemas](#17-solución-de-problemas).
-
----
+**Hasta aquí ya tienes tu copia instalada y comprobada en modo de prueba.** Ahora configura el horario con el apartado 11. Puedes mantenerla en `TEST` todo el tiempo que necesites.
 
 ## 11. Cómo se usa la webapp
 
-La webapp tiene cuatro secciones. En móvil aparecen abajo; en una pantalla grande aparecen en el menú lateral.
+Las cuatro secciones están en el menú lateral del ordenador y en la navegación inferior del móvil.
 
-### 11.1 Resumen
+### 11.1 Ajustes: jornada, oficina y estado
 
-Es la pantalla principal. Muestra:
+En **Horario base → Jornada diaria**, elige 6 u 8 horas. Ambas opciones tienen cuatro marcas y al menos una hora de descanso:
 
-- Si la automatización está **Activa** o **Pausada**.
-- El total semanal previsto.
-- El objetivo semanal.
-- Los días laborables de la semana actual.
-- Las cuatro marcas exactas de cada día, incluidos los segundos, tanto para 6 como para 8 horas.
-- Vacaciones, festivos de oficina, pausas y ajustes manuales.
+| Marca | Ejemplo de 6 h | Ejemplo de 8 h |
+| --- | --- | --- |
+| Entrada mañana | 09:00 | 09:00 |
+| Salida mediodía | 13:00 | 13:00 |
+| Entrada mediodía | 14:00 | 14:00 |
+| Salida tarde | 16:00 | 18:00 |
 
-Los botones principales son:
+El descanso no cuenta como trabajo. Al elegir 6 h, el formulario propone una salida más temprana. Revisa las cuatro horas y pulsa **Guardar horario**: cambiar el selector sin guardar no aplica el cambio.
 
-- **Activar/Pausar:** cambia el interruptor interno del scheduler.
-- **Regenerar semana:** sustituye el plan aleatorio de la semana actual por uno nuevo.
-- **Gestionar este día:** abre ese día en la sección Manual.
+Las horas deben estar ordenadas, sumar exactamente 6 u 8 horas efectivas y terminar como máximo a las 23:55. Las copias existentes conservan 8 h hasta que se guarde otra jornada.
 
-No pulses repetidamente **Regenerar semana** cuando la automatización real esté activa. Revisa siempre el nuevo horario antes de dejarla funcionando.
+Guardar el horario o cambiar de oficina recalcula los planes. Hazlo con la automatización pausada y revisa el resultado antes de reactivarla. Las vacaciones y marcas manuales guardadas se conservan.
 
-### 11.2 Cómo se genera el horario
+También encontrarás **Automatización**, **Diagnóstico**, **Últimas ejecuciones** y **Bienvenida → Repetir animación**.
 
-En **Ajustes → Horario base → Jornada diaria** puedes elegir:
+### 11.2 Resumen: entender el plan y los totales
 
-- **6 horas · con descanso:** seis horas de trabajo efectivo, por ejemplo `09:00–13:00` y `14:00–16:00`.
-- **8 horas · con descanso:** ocho horas de trabajo efectivo, por ejemplo `09:00–13:00` y `14:00–18:00`.
+Muestra las marcas de hoy y el total semanal. Pulsa sobre un día de la semana para desplegar sus cuatro horas. **Gestionar día** o **Gestionar este día** abre la pantalla Manual.
 
-Ambas jornadas son partidas y tienen los mismos cuatro momentos:
+El plan inicial añade a cada hora base un retraso aleatorio de 0 a 4 minutos y 59 segundos. Por ejemplo, una entrada base de 09:00 podría convertirse en 09:03:27. Las diferencias entre días se compensan durante la semana.
 
-1. Entrada mañana.
-2. Salida mediodía.
-3. Entrada mediodía.
-4. Salida tarde.
+| Días laborables de la semana | Objetivo base con 6 h | Objetivo base con 8 h |
+| --- | --- | --- |
+| 5 | 30 h | 40 h |
+| 4, por un festivo o vacaciones | 24 h | 32 h |
+| 0 | 0 h | 0 h |
 
-Al cambiar la jornada, el formulario propone una salida que suma las horas elegidas. Revisa las horas y pulsa **Guardar horario** para aplicar el cambio a los planes. Las instalaciones existentes mantienen su jornada de 8 horas hasta que la cambies.
+En **LIVE**, el motor añade al objetivo semanal un margen aleatorio de **0 a 60 segundos por cada día laborable**. Con cinco días y jornada de 8 h, puede aparecer un objetivo entre **40:00:00 y 40:05:00**. Ver `40:03:44`, por ejemplo, significa 40 horas, 3 minutos y 44 segundos; no son horas decimales.
 
-La configuración debe cumplir:
+La compensación puede mover salidas pendientes para ajustar el total, también después de recuperar ciertos fallos. Revisa el plan actualizado: los límites del ajuste inicial no son una garantía para todas las horas tras esas compensaciones. Si faltan marcas o no quedan salidas disponibles para compensar, el total puede quedar pendiente o con una diferencia.
 
-- Las horas están en orden cronológico dentro del mismo día.
-- En ambas jornadas, el descanso de mediodía dura al menos una hora y no cuenta como tiempo trabajado.
-- El horario base suma exactamente la jornada elegida: seis u ocho horas de trabajo.
-- La salida base es como máximo a las `23:55`, para que los ajustes aleatorios no pasen al día siguiente.
+**Regenerar semana** crea otro plan aleatorio. No es necesario para actualizar la aplicación ni arregla un fichaje ya enviado a Woffu.
 
-Al generar el plan:
+Todas las horas de la aplicación usan la zona **Europe/Madrid**, también si abres la web desde otro país.
 
-- Cada marca recibe un retraso aleatorio de `0` a `4 minutos y 59 segundos` respecto a su hora base.
-- Cada día puede desviarse hasta tres minutos del objetivo diario.
-- Las desviaciones se compensan para que el total semanal previsto conserve el objetivo de seis u ocho horas por día laborable, según la jornada elegida.
-- Una semana de cinco días tiene un objetivo de 30 horas en jornada de 6 horas, o de 40 horas en jornada de 8 horas.
-- Un día de vacaciones o festivo no genera marcas y reduce el objetivo semanal en seis u ocho horas, según la jornada elegida. Si coinciden, se descuenta una sola vez. Con cuatro días no laborables, el único día laborable suma exactamente su objetivo; una semana entera no laborable suma cero.
-- La zona horaria usada por la aplicación es `Europe/Madrid`.
+### 11.3 Calendario: vacaciones y festivos
 
-Ejemplo: si la entrada base es `09:00`, una entrada planificada podría ser `09:03:27`.
+1. Abre **Calendario** y usa las flechas para cambiar de mes.
+2. Pulsa los días laborables que quieras marcar como vacaciones. Vuelve a pulsar para desmarcarlos.
+3. Pulsa **Guardar**.
 
-### 11.3 Calendario laboral: vacaciones y festivos
+La leyenda distingue **azul claro para festivos de oficina** y **azul oscuro para vacaciones**. Los festivos se cargan por la oficina elegida y tienen su nombre en la lista del mes. No tienes que añadirlos a mano.
 
-Primero entra en **Ajustes → Oficina y festivos**, elige **Barcelona, Madrid o Sevilla** y pulsa **Guardar oficina**. Se incorporan los festivos nacionales, autonómicos y locales de esa ciudad para 2026 y 2027. Cambiar la oficina recalcula los planes y conserva las vacaciones y marcas manuales guardadas.
+Ni los festivos ni las vacaciones generan fichajes o cuentan en el objetivo semanal. Los fines de semana y festivos no se pueden seleccionar como nuevas vacaciones. Si unas vacaciones anteriores coinciden con un festivo, el día se descuenta una sola vez y se muestra como festivo.
 
-En **Calendario**:
+El calendario incluido cubre **2026 y 2027**. Si un año todavía no tiene calendario verificado, la app lo indica y bloquea los fichajes de ese año. Consulta las [fuentes oficiales y la actualización anual](OFFICE_HOLIDAYS.md).
 
-1. Usa las flechas para cambiar de mes.
-2. Pulsa un día laborable para seleccionarlo o quitarlo.
-3. Los festivos de oficina aparecen en **azul**, con su nombre en la lista del mes; las vacaciones seleccionadas aparecen en oscuro. La leyenda identifica ambos colores. Los fines de semana y los festivos no se pueden seleccionar como vacaciones.
-4. Pulsa **Guardar**.
+### 11.4 Manual: anotar lo que ya has fichado
 
-Al guardar, la aplicación recalcula los planes de las semanas afectadas. Un día marcado como vacaciones:
+**Guardar marca manual no ficha en Woffu.** Solo anota en esta web una marca que ya has realizado y evita que la automatización repita ese evento.
 
-- No genera fichajes automáticos.
-- No cuenta en el objetivo semanal.
-- No admite marcas manuales desde la pantalla Manual.
+Ejemplo: hoy quieres gestionar tú la vuelta de comer y la salida.
 
-Los festivos tienen las mismas exclusiones y no consumen días de vacaciones. Unas vacaciones guardadas previamente que coincidan con un festivo se conservan por si cambias de oficina, pero se muestran como festivo y se descuentan una sola vez.
+1. Abre **Manual** y comprueba la fecha.
+2. En **Pausar parcialmente**, elige **Entrada mediodía** y pulsa **Pausar resto del día**. Las marcas anteriores no se pausan.
+3. Realiza el fichaje que corresponda directamente en Woffu.
+4. En **Registrar marca manual**, selecciona el evento, introduce la hora real y pulsa **Guardar marca manual**.
+5. Repite el registro cuando hayas hecho la salida. Las horas anotadas aparecen en azul en el resumen.
 
-No se asigna ninguna oficina por defecto. Hasta elegirla, la automatización y el envío real de fichajes quedan pendientes de configuración. Si se consulta un año sin calendario verificado, la app lo indica y no permite fichar en ese año. Las [fuentes oficiales y la actualización anual](OFFICE_HOLIDAYS.md) están documentadas; también puedes abrir las fuentes desde Ajustes.
+**Reanudar este día** elimina la pausa parcial. No borra los ajustes manuales ni reactiva el interruptor global si está pausado. Antes de reanudar, comprueba qué eventos quedan por hacer.
 
-### 11.4 Manual
+### 11.5 Entender «Últimas ejecuciones»
 
-Esta sección permite coordinar acciones que vas a realizar tú directamente.
-
-#### Pausar parcialmente un día
-
-Puedes elegir desde qué evento quieres hacerte cargo manualmente. Por ejemplo, si eliges **Entrada mediodía**:
-
-- Las marcas anteriores pueden seguir automáticas.
-- **Entrada mediodía** y **Salida tarde** quedan omitidas por el scheduler.
-
-Pulsa **Reanudar este día** para eliminar esa pausa.
-
-#### Registrar una marca manual
-
-Selecciona evento y hora real, y pulsa **Guardar marca manual**. La hora aparece en azul en el resumen.
-
-> **Muy importante:** este botón no envía ningún fichaje a Woffu. Solo guarda en D1 que ese evento ya ha sido gestionado manualmente y hace que el scheduler no lo repita. Debes realizar el fichaje real en Woffu o mediante `TU_URL/woffu/punch` y después registrar el ajuste en esta pantalla si corresponde a un evento del plan.
-
-La aplicación comprueba que las cuatro horas efectivas mantengan el orden y un descanso mínimo de una hora en ambas jornadas. Los ajustes se calculan respecto a las seis u ocho horas de trabajo seleccionadas.
-
-### 11.5 Ajustes
-
-En **Ajustes** encontrarás:
-
-- **Oficina y festivos:** ciudad, calendario aplicado, años verificados y fuentes oficiales.
-- **Horario base:** el selector de jornada de 6 u 8 horas y sus horas de entrada y salida.
-- **Automatización:** el interruptor global Activa/Pausada.
-- **Diagnóstico:** versión, modo y momento de actualización.
-- **Últimas ejecuciones:** resultados guardados por el scheduler.
-
-Guardar un nuevo horario base invalida los planes generados anteriormente para poder recrearlos con la nueva configuración.
-
-### 11.6 Significado de los estados del registro
-
-| Estado | Significado |
+| Estado | Qué significa / qué hacer |
 | --- | --- |
-| `TEST` | El evento llegó a su hora en modo de prueba; no se envió a Woffu. |
-| `SUCCESS` | Woffu aceptó el fichaje programado. |
-| `FAILED` | Se intentó el fichaje, pero ocurrió un error. Revisa el mensaje antes de hacer nada manualmente para evitar duplicados. |
-| `PENDING` | El evento empezó a procesarse y todavía no tiene resultado final. |
+| `TEST` | Se simuló el evento. No se envió ningún fichaje. |
+| `SUCCESS` | Woffu aceptó el fichaje. |
+| `PENDING_SAFE` | La aplicación prepara el envío; todavía no ha llegado al paso de enviarlo. |
+| `FAILED_RETRYABLE` | Falló antes del envío y puede reintentarlo dentro de la ventana de recuperación. |
+| `POSTING` | Se ha iniciado la fase de envío. Espera y consulta el resultado antes de intervenir. |
+| `UNKNOWN` | No se puede confirmar el resultado. Comprueba Woffu antes de repetir: podría haberse creado. |
+| `FAILED` | El intento terminó con error. Lee el mensaje y comprueba Woffu antes de actuar. |
+| `PENDING` | Estado de simulación o de una versión anterior; si persiste en LIVE, requiere revisión y no un reenvío manual a ciegas. |
 
-Un fichaje real que figure como `SUCCESS`, `PENDING` o `FAILED` no se repite automáticamente, aunque regeneres el plan o cambies el horario. Los eventos se reservan antes de enviarse para evitar duplicados entre ejecuciones simultáneas. Si una petición falla o queda pendiente, comprueba primero el resultado en Woffu: una respuesta perdida no demuestra que el fichaje no se haya creado. La preparación del plan no registra simulaciones `TEST` cuando se va a ejecutar en `LIVE`.
-
----
+Si un resultado queda sin confirmar, la app bloquea el reenvío automático de ese evento para evitar duplicados. Regenerar el plan no elimina esa protección.
 
 ## 12. Probar el plan automático sin escribir en Woffu
 
-Esta es la prueba recomendada antes de cualquier escritura real.
+Esta prueba permite comprobar el reloj automático sin crear marcas reales.
 
-### Paso 12.1 — Confirmar el modo seguro
+1. En `TU_URL/health`, confirma `mode: TEST` y `woffuWriteEnabled: false`.
+2. En tu web, guarda **oficina**, **jornada** y **horario**.
+3. Elige para la prueba un día de lunes a viernes que no sea festivo ni vacaciones. No funcionará en un día bloqueado.
+4. En **Resumen**, busca la siguiente marca que todavía no haya pasado. Puedes esperar a ese evento; no hace falta inventar un horario para probarla.
+5. Pulsa **Activar automatización** y espera a que pase la hora indicada.
+6. Recarga la web y abre **Ajustes → Últimas ejecuciones**: debe aparecer `TEST`.
+7. Comprueba en Woffu que no se creó una marca y pulsa **Pausar automatización** al terminar.
 
-Abre `TU_URL/health` y confirma:
+Si acabas de configurar el cron, deja hasta 15 minutos para que se propague antes de esperar el evento. [Tiempo de propagación documentado por Cloudflare](https://developers.cloudflare.com/workers/configuration/cron-triggers/#2-update-configuration).
 
-```text
-mode: TEST
-woffuWriteEnabled: false
-```
-
-### Paso 12.2 — Configurar el horario
-
-1. Entra en `TU_URL/`.
-2. Abre **Ajustes**.
-3. Elige la jornada de **6 horas · con descanso** u **8 horas · con descanso**. Introduce las cuatro horas para sumar la jornada elegida, dejando al menos una hora de descanso.
-4. Pulsa **Guardar horario**.
-
-Ejemplo válido para 8 horas:
-
-```text
-Entrada mañana:   09:00
-Salida mediodía:  13:00
-Entrada mediodía: 14:00
-Salida tarde:     18:00
-```
-
-Ejemplo válido para 6 horas:
-
-```text
-Entrada mañana:   09:00
-Salida mediodía:  13:00
-Entrada mediodía: 14:00
-Salida tarde:     16:00
-```
-
-### Paso 12.3 — Preparar una prueba cercana
-
-Si quieres ver el scheduler sin esperar hasta el día siguiente:
-
-1. Espera a que hayan pasado al menos 15 minutos desde el primer despliegue del Worker. Los cambios de un Cron Trigger pueden tardar unos minutos en propagarse.
-2. Ajusta una de las horas base a un momento futuro razonablemente cercano.
-3. Mantén la duración de la jornada elegida y al menos una hora de descanso.
-4. Guarda el horario.
-5. En **Resumen**, pulsa **Regenerar semana**.
-6. Anota la hora exacta generada para el siguiente evento.
-
-Cloudflare documenta que los cambios de cron pueden tardar hasta 15 minutos en propagarse:
-
-[Cloudflare Docs — Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
-
-### Paso 12.4 — Activar solo la simulación
-
-1. Pulsa **Activar** en la webapp.
-2. Espera a que pase la hora exacta planificada.
-3. Abre **Ajustes → Últimas ejecuciones**.
-4. Debe aparecer `TEST`.
-5. Comprueba en Woffu que no se creó ningún fichaje.
-6. Pulsa **Pausar** cuando termines la prueba.
-
-El cron se ejecuta una vez por minuto y, en modo TEST, registra la simulación sin comunicarse con el endpoint de fichaje de Woffu.
-
----
+Si ya han pasado todas las marcas, espera al siguiente día laborable. En TEST no se reproducen todas las marcas pasadas por el mero hecho de activar el interruptor. Para una prueba cercana puedes desplazar **las cuatro horas base el mismo intervalo**, manteniendo el descanso y las 6/8 horas; después restaura y guarda tu horario habitual antes de pasar a LIVE.
 
 ## 13. Probar un único fichaje real de forma controlada
 
-Haz esta sección únicamente con una cuenta Woffu de prueba autorizada y después de que `/api/woffu/test` haya respondido correctamente.
+**Este apartado es opcional y crea una marca real. No hace falta completarlo para instalar o actualizar la aplicación.** Úsalo solo si tienes previsto y autorizado ese fichaje. Para comprobar la conexión sin fichar basta con el apartado 10.3.
 
-### Paso 13.1 — Mantener el scheduler pausado
+1. Guarda la oficina y confirma que hoy no es fin de semana, festivo ni vacaciones.
+2. Deja la automatización **Pausada** y verifica que `/api/woffu/test` funciona.
+3. En **Cloudflare → tu Worker → Settings → Variables and Secrets**, cambia `MODE` a `LIVE` y `WOFFU_WRITE_ENABLED` a `true`. Pulsa **Deploy**.
+4. En `TU_URL/health`, confirma `mode: LIVE`, `woffuWriteEnabled: true` y `liveManualPunchReady: true`. Este último valor indica permiso técnico, no que el calendario permita fichar hoy.
+5. Abre `TU_URL/woffu/punch`, identifícate con `admin` y tu contraseña de administración y lee el estado.
+6. Pulsa **Fichar ahora** una sola vez, confirma si la página lo solicita y comprueba la marca directamente en Woffu. Se utiliza la hora actual.
+7. Si corresponde a una de las cuatro marcas del plan, anótala también en **Manual → Guardar marca manual** antes de activar la automatización. Esta página especial no anota por sí sola qué evento del plan has completado.
+8. Al terminar la prueba, vuelve a `MODE = TEST` y `WOFFU_WRITE_ENABLED = false` en Cloudflare, pulsa **Deploy** y deja la web **Pausada**.
 
-En la webapp confirma:
-
-```text
-Automatización = Pausada
-```
-
-Esto evita que el plan semanal envíe marcas mientras pruebas la página manual.
-
-### Paso 13.2 — Abrir temporalmente la escritura
-
-En Cloudflare abre:
-
-```text
-Workers & Pages
-→ woffu-clock-cloud
-→ Settings
-→ Variables and Secrets
-```
-
-Cambia las variables de texto a:
-
-```text
-MODE = LIVE
-WOFFU_WRITE_ENABLED = true
-```
-
-Guarda y despliega los cambios.
-
-### Paso 13.3 — Comprobar la puerta técnica
-
-Abre `TU_URL/health` y confirma:
-
-```text
-mode: LIVE
-woffuWriteEnabled: true
-liveManualPunchReady: true
-```
-
-### Paso 13.4 — Enviar una única marca
-
-Abre:
-
-```text
-TU_URL/woffu/punch
-```
-
-1. Identifícate con `admin` y `ADMIN_PASSWORD` si el navegador lo pide.
-2. Lee el estado de la página.
-3. Pulsa **Fichar ahora** una sola vez.
-4. Espera al mensaje de confirmación.
-5. Abre [Woffu](https://app.woffu.com/) y confirma que existe exactamente una nueva marca con la hora actual.
-
-Esta acción usa la hora real del momento. No utiliza la hora aleatoria del plan semanal y no depende de que la automatización esté activa.
-
-### Paso 13.5 — Cerrar otra vez la escritura
-
-Si todavía no vas a probar el scheduler real, vuelve a Cloudflare y deja:
-
-```text
-MODE = TEST
-WOFFU_WRITE_ENABLED = false
-```
-
-Guarda y despliega.
-
----
+Si la petición falla o no devuelve confirmación, consulta Woffu antes de pulsar otra vez. El interruptor Pausada solo detiene el plan automático, no este botón de fichaje real.
 
 ## 14. Activar la automatización real
 
-Antes de activarla, revisa:
+Hazlo cuando la conexión de lectura funcione y hayas revisado oficina, jornada, vacaciones y próximas marcas. No es obligatorio generar una marca adicional de prueba del apartado 13.
 
-- La cuenta Woffu es la cuenta de prueba correcta.
-- `/api/woffu/test` funciona.
-- El fichaje manual controlado funcionó.
-- El plan de la semana muestra las horas esperadas.
-- Las vacaciones son correctas.
-- No hay pausas o marcas manuales olvidadas.
-- Entiendes cómo detener la automatización.
+1. Mantén la web **Pausada**. Si cambiaste el horario para simular, restaura el habitual y pulsa **Guardar horario**.
+2. Comprueba que la oficina está guardada y las cuatro marcas son correctas.
+3. Si hoy ya has fichado alguna marca directamente en Woffu, regístrala en **Manual** antes de continuar.
+4. En **Cloudflare → tu Worker → Settings → Variables and Secrets**, configura `MODE = LIVE` y `WOFFU_WRITE_ENABLED = true`. Pulsa **Deploy**.
+5. En `TU_URL/health`, comprueba `mode: LIVE`, `woffuWriteEnabled: true` y `scheduledWoffuWritesEnabled: true`.
+6. Vuelve a tu web, recarga y pulsa **Activar automatización** como último paso.
+7. Después de la primera marca prevista, comprueba que aparece en Woffu y que el registro muestra `SUCCESS`.
 
-### Secuencia recomendada
+El motor revisa el plan cada minuto y dispone de una ventana de recuperación de **hasta 10 minutos**. Si lo activas justo después de una hora planificada, todavía puede procesar ese evento; una simulación `TEST` anterior no cuenta como un fichaje real ni impide ese envío. Por eso es necesario anotar antes las marcas que ya hiciste tú.
 
-1. Mantén la webapp en **Pausada**.
-2. En Cloudflare configura:
+Se excluyen los fines de semana, festivos, vacaciones, eventos pausados y marcas manuales. Algunos errores anteriores al envío se reintentan; los resultados ambiguos se bloquean para evitar duplicados. Cuando recupera un intento fallido antes de enviar, puede usar la hora actual y ajustar salidas pendientes para compensar.
 
-   ```text
-   MODE = LIVE
-   WOFFU_WRITE_ENABLED = true
-   ```
-
-3. Guarda y despliega.
-4. Abre `TU_URL/health`.
-5. Confirma `mode: LIVE`, `woffuWriteEnabled: true` y `scheduledWoffuWritesEnabled: true`.
-6. Vuelve a la webapp y revisa por última vez la siguiente hora planificada.
-7. Pulsa **Activar** como último paso.
-
-### Qué hace el scheduler en cada minuto
-
-Cuando la automatización está activa:
-
-```text
-Cloudflare despierta el Worker
-→ usa la fecha y hora de Europe/Madrid
-→ ignora sábados y domingos
-→ comprueba la oficina, la cobertura anual y si el día es festivo o vacaciones
-→ carga el plan del día
-→ aplica pausas y marcas manuales
-→ busca un evento dentro de ese minuto
-→ evita repetir un evento ya completado
-→ inicia sesión en Woffu
-→ envía la marca con la hora exacta planificada
-→ guarda SUCCESS o FAILED en D1
-```
-
-La aplicación genera las semanas siguientes cuando el scheduler o la webapp las necesita. Para seguir fichando, debe existir un calendario de festivos verificado para el año correspondiente. Esta versión incluye 2026 y 2027; los años posteriores requieren actualizar los calendarios antes de permitir fichajes.
-
-### Después del primer evento programado
-
-1. Comprueba la marca en Woffu.
-2. Abre **Ajustes → Últimas ejecuciones**.
-3. Confirma que aparece `SUCCESS`.
-4. Si aparece `FAILED`, pausa la automatización antes de hacer una marca manual y revisa el error.
-
----
+La automatización continúa en las semanas siguientes hasta que la pauses, siempre que exista calendario verificado para el año. Si aparece `FAILED` o `UNKNOWN`, pausa y revisa Woffu antes de hacer una marca adicional.
 
 ## 15. Detener la automatización
 
-Cerrar el navegador o apagar el ordenador **no** detiene Cloudflare.
+**Cerrar la web o apagar el ordenador no detiene los fichajes.**
 
-### Parada rápida desde la webapp
+- Para parar el plan automático: abre tu web y pulsa **Pausar automatización**.
+- Para bloquear también el botón de fichaje real: en **Cloudflare → tu Worker → Settings → Variables and Secrets**, cambia `WOFFU_WRITE_ENABLED` a `false` y pulsa **Deploy**.
 
-En `TU_URL/` pulsa **Pausar**.
+Para dejar terminadas las pruebas, usa `MODE = TEST`, `WOFFU_WRITE_ENABLED = false` y la web **Pausada**. Comprueba el resultado en `/health` y en tu web. Detenerla no elimina una marca que ya se haya enviado.
 
-Esto detiene los fichajes programados, pero la página `TU_URL/woffu/punch` todavía podría fichar si `MODE=LIVE` y `WOFFU_WRITE_ENABLED=true`.
-
-### Bloqueo técnico desde Cloudflare
-
-En **Variables and Secrets** cambia:
-
-```text
-WOFFU_WRITE_ENABLED = false
-```
-
-Guarda y despliega. Con este valor, ni el scheduler real ni la página manual pueden escribir en Woffu.
-
-### Estado recomendado al terminar las pruebas
-
-Deja los tres controles así:
-
-```text
-MODE = TEST
-WOFFU_WRITE_ENABLED = false
-Automatización = Pausada
-```
-
-Comprueba `TU_URL/health` después de guardar.
-
-### Si has perdido acceso a la webapp
-
-Aunque no recuerdes `ADMIN_PASSWORD`, puedes bloquear escrituras desde Cloudflare poniendo `WOFFU_WRITE_ENABLED = false`. También puedes reemplazar `ADMIN_PASSWORD` por un secreto nuevo.
-
----
+Si no puedes entrar en la web porque olvidaste la contraseña, aún puedes bloquear la escritura desde Cloudflare. Allí también puedes reemplazar `ADMIN_PASSWORD` y volver a desplegar.
 
 ## 16. Actualizar la webapp en el futuro
 
-Tu fork no siempre incorpora automáticamente los cambios del repositorio original.
+**Si ya tienes tu copia funcionando, empieza aquí.** No necesitas repetir la instalación, crear otro fork ni tocar las contraseñas.
 
-### Actualización sencilla desde GitHub
+### 16.1 Traer las novedades a tu fork
 
-1. Abre `https://github.com/TU-USUARIO/woffu-clock-cloud`.
-2. Busca el botón **Sync fork**.
-3. Revisa el aviso.
-4. Pulsa **Update branch**.
+1. Abre tu web y pulsa **Pausar automatización** si estaba activa. Haz la actualización en un momento en el que puedas revisar el resultado antes de la siguiente marca.
+2. Entra en [GitHub](https://github.com/) con tu cuenta. En el menú de tu avatar, abre **Your repositories** y selecciona **tu** `woffu-clock-cloud`.
+3. Comprueba que el propietario eres tú y que se ve `forked from paubaaay/woffu-clock-cloud`. El [repositorio original](https://github.com/paubaaay/woffu-clock-cloud) es la fuente de las novedades; **Sync fork se pulsa en tu copia**.
+4. En el selector sobre la lista de archivos, elige `main`.
+5. Pulsa **Sync fork** (sincronizar copia) y después **Update branch** (actualizar rama).
 
-Guía oficial:
+Si indica **up to date**, ya tienes los cambios en GitHub. Si informa de **conflictos**, pide ayuda con ese mensaje: no pulses una opción para descartar tus cambios ni borres el fork. [Instrucciones oficiales de sincronización](https://docs.github.com/es/pull-requests/how-tos/work-with-forks/syncing-a-fork).
 
-[GitHub Docs — Sincronizar un fork desde la web](https://docs.github.com/es/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork)
+### 16.2 Esperar a que se publique y revisar
 
-Al actualizar la rama `main`, Cloudflare inicia automáticamente un nuevo build.
+1. Abre **Cloudflare → Workers & Pages → woffu-clock-cloud → Deployments → View build history**.
+2. Espera a que el build del cambio recién sincronizado termine con éxito y quede como despliegue activo. Que GitHub esté actualizado no significa todavía que la web lo esté.
+3. Abre tu dirección de siempre y recarga. En **Ajustes → Diagnóstico**, comprueba la versión; también aparece en `TU_URL/health`.
+4. Si aparece **Elegir oficina**, abre **Ajustes → Oficina y festivos**, elige tu ciudad y pulsa **Guardar oficina**. Sin ella los fichajes quedan bloqueados.
+5. Revisa jornada, horario, vacaciones y próximas marcas. No pulses **Regenerar semana** solo por haber actualizado.
+6. Si antes la usabas en LIVE, confirma en `/health` que siguen `LIVE` y escritura `true`. Cuando quieras reanudar, pulsa **Activar automatización**. Si ya hiciste alguna marca a mano durante la pausa, anótala primero en **Manual**.
 
-### Después de actualizar
+La sincronización actualiza archivos; no copia las contraseñas ni los datos de otra persona. En una actualización normal se mantienen los secretos, las variables y los datos de tu D1, siempre que conserves el mismo Worker y la misma base. La jornada previa no cambia a 6 h por actualizar: debes elegirla y guardarla si la necesitas.
 
-1. Abre `Workers & Pages → woffu-clock-cloud → Deployments`.
-2. Espera a que el build termine correctamente.
-3. Comprueba `TU_URL/health`.
-4. Entra en la webapp y revisa el modo, el plan y el estado Activa/Pausada.
-
-Las variables del panel se conservan porque el proyecto usa `keep_vars: true`, y Cloudflare tampoco elimina secretos durante un despliegue normal. La base D1 conserva su información mientras siga asociada al Worker.
-
-> Sincronizar el fork puede desplegar código nuevo. Hazlo cuando puedas revisar el resultado y deja la automatización pausada si el cambio todavía no ha sido probado.
-
----
+**Comprobación final:** tu web muestra la nueva versión, tu oficina y tu horario, y has dejado la automatización en el estado que querías.
 
 ## 17. Solución de problemas
 
-### “No encuentro el repositorio” o GitHub muestra 404
+Empieza por la fila que coincide con lo que ves:
 
-Posibles causas:
+| Lo que ves | Qué revisar o hacer |
+| --- | --- |
+| GitHub muestra **404 / Not Found** | Inicia sesión con la cuenta correcta. Si requiere invitación, acepta el correo del propietario. |
+| No encuentro **Sync fork** | Abre tu copia, no el original. Debe poner `forked from…`. Si no aparece, comprueba que realmente creaste un fork. |
+| Mi fork no aparece en Cloudflare | En [GitHub → Aplicaciones instaladas](https://github.com/settings/installations), abre la integración de Cloudflare y permite el acceso a tu repositorio. |
+| El build dice que faltan secretos | Añade los tres secretos del paso 6.2 en **Settings → Variables and Secrets** del Worker, guarda y reintenta el build. No basta con añadirlos como variables de build. |
+| El build dice que el nombre no coincide | El Worker debe llamarse `woffu-clock-cloud`. Si ya tenías otro funcionando, pide ayuda antes de sustituirlo o borrar datos. |
+| El build falla por el comando | Revisa rama `main`, raíz vacía o `/`, build vacío y deploy `npx wrangler deploy`. Después usa **Retry build**. |
+| Sigo viendo **Hello World** | Solo está publicado el Worker básico. Comprueba el build del repositorio del paso 6.5 y que sea el despliegue activo. |
+| Error relacionado con `DB` | Sigue el apartado 7: debe existir una conexión D1 llamada exactamente `DB` y tener tu base seleccionada. |
+| La base existe, pero no veo tablas | Abre tu web e identifícate; la aplicación las prepara al cargar. No ejecutes SQL para inventarlas. |
+| Me pide la contraseña una y otra vez | Usa `admin` y la contraseña guardada en `ADMIN_PASSWORD`. Si el navegador recuerda una incorrecta, prueba una ventana privada. |
+| `/health` dice `woffuCredentialsConfigured: false` | Falta o está vacío `WOFFU_EMAIL` o `WOFFU_PASSWORD` en las variables del Worker. Corrige y despliega. |
+| `/api/woffu/test` falla | Comprueba tus credenciales en Woffu. Si tu organización solo permite SSO o restringe este acceso, consulta a su administrador. No pases a LIVE para intentar arreglarlo. |
+| La web muestra **Configurar**, **Pendiente** u **Oficina pendiente** | Elige y guarda la oficina. Si el aviso es de un año sin calendario verificado, hace falta una actualización del calendario. |
+| Aparece `TEST` cuando esperaba un fichaje real | Comprueba los dos valores en `/health`: si no son `LIVE` y escritura `true`, el motor simula. |
+| El botón de fichaje real rechaza el envío | Revisa `LIVE`, escritura `true`, oficina guardada y que hoy no sea fin de semana, festivo o vacaciones. |
+| Veo `FAILED`, `UNKNOWN` o un envío sin confirmar | Pausa, consulta el mensaje en **Ajustes → Últimas ejecuciones** y comprueba Woffu antes de repetir. |
+| GitHub está actualizado, pero mi web no | Revisa el último build en Cloudflare, su rama y repositorio. Si falla, abre su detalle; después de un éxito, recarga la web y revisa **Diagnóstico**. |
 
-- No has iniciado sesión en la cuenta correcta.
-- No has aceptado la invitación a un repositorio privado.
-- El propietario no ha permitido forks privados.
+### No aparece el evento automático esperado
 
-Solución: confirma tu usuario con el propietario del repositorio, acepta la invitación y vuelve a abrir el enlace original.
+Comprueba, por este orden:
 
-### El fork no aparece en Cloudflare
+1. Oficina guardada, calendario disponible y automatización **Activa**.
+2. Para un fichaje real: `LIVE` y escritura `true`. Para la simulación: `TEST` y `false`.
+3. Día laborable sin festivo ni vacaciones; evento sin pausa ni marca manual.
+4. Hora del plan actual: no basta con mirar la hora base de Ajustes. En LIVE, una marca de hace más de 10 minutos queda fuera de recuperación.
+5. En Cloudflare, **Settings → Triggers → Cron Triggers** contiene `* * * * *`. Déjalo así: significa cada minuto. Si acabas de añadirlo, puede tardar hasta 15 minutos en propagarse.
+6. Recarga la web para ver los registros recientes.
 
-1. Abre [GitHub → Aplicaciones instaladas](https://github.com/settings/installations).
-2. Entra en **Cloudflare Workers and Pages**.
-3. Comprueba que tu fork está autorizado.
-4. Vuelve a Cloudflare y recarga la lista.
-
-### El build indica que faltan secretos obligatorios
-
-El código todavía no se ha desplegado porque falta uno de estos secretos de ejecución:
-
-```text
-ADMIN_PASSWORD
-WOFFU_EMAIL
-WOFFU_PASSWORD
-```
-
-1. Abre el Worker vacío `woffu-clock-cloud`.
-2. Ve a **Settings → Variables and Secrets**.
-3. Crea o reemplaza los tres valores con tipo **Secret**.
-4. Vuelve a **Deployments → View build history**.
-5. Abre el build fallido y pulsa **Retry build**.
-
-No pongas las contraseñas en el repositorio para resolver este error.
-
-### El build falla porque el nombre no coincide
-
-El Worker debe llamarse exactamente:
-
-```text
-woffu-clock-cloud
-```
-
-Ese nombre coincide con `wrangler.jsonc`. Corrige el nombre del proyecto o vuelve a importar el repositorio con el nombre correcto.
-
-### El build falla por un comando
-
-Comprueba:
-
-```text
-Rama: main
-Directorio raíz: vacío o /
-Build command: vacío
-Deploy command: npx wrangler deploy
-```
-
-Después pulsa **Retry deployment** o el botón equivalente.
-
-### La web muestra un error relacionado con `DB`
-
-Comprueba en **Bindings**:
-
-- Tipo: D1 database.
-- Variable name: `DB`.
-- Base seleccionada: la D1 de tu copia.
-
-Si no existe, sigue la alternativa del [apartado 7](#7-comprobar-la-base-de-datos-d1).
-
-### La base existe pero no veo tablas
-
-Abre `TU_URL/`, identifícate y espera a que cargue el resumen. Las tablas se crean durante la primera carga de datos o ejecución del scheduler. No necesitas ejecutar SQL.
-
-### `/health` muestra `woffuCredentialsConfigured: false`
-
-Falta `WOFFU_EMAIL`, `WOFFU_PASSWORD` o alguno está vacío.
-
-1. Ve a **Settings → Variables and Secrets** del Worker.
-2. Confirma que ambos están en las variables de ejecución, no solo en las variables de build.
-3. Reemplaza los secretos si hay dudas.
-4. Despliega y vuelve a abrir `/health`.
-
-### El navegador pide la contraseña una y otra vez
-
-Comprueba:
-
-```text
-Usuario: admin
-Contraseña: ADMIN_PASSWORD, no la contraseña de Woffu
-```
-
-Los navegadores suelen recordar credenciales incorrectas de autenticación básica. Prueba una ventana privada después de confirmar o reemplazar `ADMIN_PASSWORD` en Cloudflare.
-
-### `/api/woffu/test` falla
-
-No actives escrituras. Revisa:
-
-- Email Woffu correcto y sin espacios al principio o final.
-- Contraseña Woffu actual.
-- Cuenta de prueba activa.
-- Inicio de sesión con contraseña permitido por la configuración de la empresa.
-- Permisos de la cuenta para consultar usuario y empresa.
-
-Prueba primero a iniciar sesión manualmente en [Woffu](https://app.woffu.com/). Si la organización utiliza exclusivamente SSO o restringe la API, consulta con su administrador.
-
-### `/woffu/punch` dice “Escritura real desactivada”
-
-Es el comportamiento seguro. Para la prueba controlada deben coincidir:
-
-```text
-MODE = LIVE
-WOFFU_WRITE_ENABLED = true
-```
-
-Guarda, despliega y confirma `/health`. Vuelve a `TEST` y `false` al terminar.
-
-### El scheduler no ejecuta un evento
-
-Revisa en este orden:
-
-1. La webapp muestra **Activa**.
-2. `/health` muestra `mode: LIVE` y `woffuWriteEnabled: true`.
-3. El día es de lunes a viernes.
-4. El día no está marcado como vacaciones ni es festivo de la oficina; la oficina está seleccionada y hay calendario verificado para ese año.
-5. El evento no está cubierto por una pausa parcial.
-6. El evento no está registrado como manual.
-7. La hora exacta del plan todavía no ha pasado.
-8. El cron `* * * * *` aparece en **Settings → Triggers → Cron Triggers**.
-9. Han pasado hasta 15 minutos desde un cambio reciente del cron.
-
-### El registro muestra `TEST` cuando esperabas `SUCCESS`
-
-`MODE` sigue en `TEST` en la versión desplegada. Revisa las variables de ejecución y `/health`.
-
-### El registro muestra `FAILED`
-
-1. Pausa la automatización.
-2. Lee el mensaje en **Ajustes → Últimas ejecuciones**.
-3. Comprueba Woffu antes de repetir manualmente para evitar duplicados.
-4. Abre `Workers & Pages → woffu-clock-cloud → Observability` para consultar los logs de Cloudflare.
-
-Guía oficial:
-
-[Cloudflare Docs — Consultar Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
-
-### GitHub está actualizado pero Cloudflare no ha desplegado
-
-1. Abre **Deployments** en el Worker.
-2. Revisa el último build y sus logs.
-3. En **Settings → Builds**, confirma repositorio, rama `main` y comando de deploy.
-4. Comprueba los permisos de la aplicación de Cloudflare en GitHub.
-
-Estado de los servicios, por si existe una incidencia general:
-
-- [Estado de GitHub](https://www.githubstatus.com/)
-- [Estado de Cloudflare](https://www.cloudflarestatus.com/)
-
----
+Si necesitas ayuda, indica **qué paso seguías, qué botón pulsaste y el texto del error**. No compartas contraseñas, secretos ni capturas donde se vean. Los detalles técnicos están en el build o en **Observability** del Worker; no tienes que entenderlos para pedir ayuda.
 
 ## 18. Preguntas frecuentes
 
-### ¿Tengo que dejar el ordenador encendido?
+**¿Necesito dejar el ordenador encendido o la pestaña abierta?** No. Cloudflare ejecuta la automatización en la nube.
 
-No. Cloudflare ejecuta el Worker y el cron en la nube.
+**¿Necesito instalar Git, Node.js o un editor?** No para seguir esta guía. Las acciones se realizan en GitHub, Cloudflare y tu web.
 
-### ¿Cerrar la webapp detiene los fichajes?
+**¿El fork incluye la cuenta Woffu de otra persona?** No. El fork copia el código. Tú configuras tus secretos en tu Worker y tus datos se guardan en tu D1.
 
-No. Debes pulsar **Pausar** o poner `WOFFU_WRITE_ENABLED = false`.
+**¿Puedo compartir mi web con un compañero para que configure su oficina?** Esta aplicación tiene una sola configuración por copia. Tu compañero debe crear su propio fork y Worker; cambiar la oficina dentro de tu web cambia la tuya.
 
-### ¿Necesito Git, Node.js, Visual Studio Code o terminal?
+**¿Elegir 6 horas es suficiente?** No: revisa las cuatro horas y pulsa **Guardar horario**. El descanso sigue siendo de al menos una hora.
 
-No para este tutorial. GitHub y Cloudflare se conectan desde el navegador.
+**¿Un festivo consume un día de vacaciones?** No. Se distingue en el calendario y se excluye del objetivo semanal por separado.
 
-### ¿Necesito comprar un dominio?
+**¿Guardar una marca manual ficha en Woffu?** No. Solo anota aquí una marca ya realizada y evita repetir ese evento automáticamente.
 
-No. La dirección `workers.dev` es suficiente para este entorno de prueba.
+**¿Por qué veo unos minutos de más en el objetivo semanal?** El modo LIVE añade un margen de hasta 60 segundos por día laborable. El apartado 11.2 explica cómo leerlo.
 
-### ¿Cuesta dinero?
+**¿Borrar el fork detiene los fichajes?** No necesariamente: Cloudflare puede seguir ejecutando la versión publicada. Usa el apartado 15 para detenerla.
 
-Cloudflare ofrece niveles gratuitos con límites para Workers y D1. Una copia de prueba de poco uso está planteada para funcionar dentro de esos niveles, pero debes revisar el consumo y las condiciones actuales de tu cuenta. No actives voluntariamente un plan de pago si no lo necesitas.
-
-### ¿Dónde se guardan mis datos?
-
-- El código está en tu fork de GitHub.
-- Horarios, vacaciones, planes, pausas y registros están en tu D1.
-- Las credenciales están en los secretos del Worker.
-- La webapp puede guardar una copia temporal de su última vista en el almacenamiento local del navegador para cargar más rápido.
-
-### ¿Quién puede abrir la dirección?
-
-La dirección `workers.dev` existe en Internet. La webapp y sus APIs de gestión piden `admin` y `ADMIN_PASSWORD`, pero `/health` es público y muestra solo estado técnico no sensible. No compartas la URL ni la contraseña.
-
-### ¿“Registrar marca manual” ficha en Woffu?
-
-No. Solo registra un ajuste en D1 y evita que el scheduler duplique ese evento. El fichaje real debe hacerse en Woffu o en `TU_URL/woffu/punch` cuando las escrituras estén habilitadas.
-
-### ¿La automatización termina el viernes o al acabar la semana?
-
-No. Es indefinida. Ignora fines de semana, genera las semanas que necesita y continúa hasta que la pauses o cierres la escritura.
-
-### ¿Borrar el fork de GitHub detiene Cloudflare?
-
-No necesariamente. Un despliegue ya publicado puede seguir funcionando. Detén primero la automatización en la webapp y bloquea la escritura en Cloudflare.
-
-### ¿Puedo usar una cuenta Woffu real?
-
-Esta guía y el proyecto están planteados para pruebas. No uses una cuenta laboral real sin autorización expresa, una revisión funcional y de seguridad, y una comprobación de las políticas aplicables.
-
----
+**¿Dónde se guardan mis datos?** Los archivos están en GitHub; horario, oficina, vacaciones y registros, en D1; las contraseñas, en los secretos de Cloudflare. El navegador puede conservar una vista temporal para cargar más rápido.
 
 ## 19. Checklist final
 
-### Cuentas y despliegue
+Marca solo el bloque que corresponda a lo que has hecho.
 
-- [ ] He creado y verificado mi cuenta de GitHub.
-- [ ] Mi fork está en `TU-USUARIO/woffu-clock-cloud`.
-- [ ] He creado y verificado mi cuenta de Cloudflare.
-- [ ] Cloudflare está conectado a mi fork, no al repositorio de otra persona.
-- [ ] El Worker se llama exactamente `woffu-clock-cloud`.
-- [ ] El último deployment aparece correcto.
-- [ ] Existe una base D1 conectada con el binding exacto `DB`.
+### Primera instalación en modo de prueba
 
-### Seguridad
+- [ ] Mi fork pertenece a mi usuario y Cloudflare está conectado a esa copia.
+- [ ] El build ha terminado bien y existe el binding `DB`.
+- [ ] Puedo entrar en mi propia dirección con `admin` y `ADMIN_PASSWORD`.
+- [ ] He guardado mi oficina, jornada, horario y vacaciones.
+- [ ] `/health` muestra `TEST` y escritura `false`; la conexión de lectura con Woffu funciona.
+- [ ] He dejado la automatización **Pausada**, salvo mientras realizo una simulación.
 
-- [ ] `ADMIN_PASSWORD`, `WOFFU_EMAIL` y `WOFFU_PASSWORD` son secretos de ejecución.
-- [ ] No he escrito ninguna contraseña en GitHub ni en el código.
-- [ ] Mi contraseña de administración es única.
-- [ ] Estoy utilizando una cuenta Woffu de prueba autorizada.
+### Si he decidido activar fichajes reales
 
-### Pruebas sin escritura
+- [ ] He revisado las próximas marcas y anotado las que ya hice manualmente.
+- [ ] `/health` muestra `LIVE` y escritura `true`; la web muestra **Activa**.
+- [ ] Después del primer evento he comprobado Woffu y el resultado `SUCCESS`.
+- [ ] Sé pausar la automatización y bloquear la escritura desde Cloudflare.
 
-- [ ] `MODE = TEST`.
-- [ ] `WOFFU_WRITE_ENABLED = false`.
-- [ ] La automatización está pausada al empezar.
-- [ ] `/health` responde con `ok: true`.
-- [ ] `/api/woffu/test` responde correctamente.
-- [ ] Entiendo las cuatro pantallas de la webapp.
-- [ ] He visto un evento `TEST` sin que aparezca un fichaje en Woffu.
+### Si solo he actualizado mi copia
 
-### Antes de una prueba real
+- [ ] He usado **Sync fork → Update branch** en mi fork y he comprobado el despliegue en Cloudflare.
+- [ ] Mi web muestra la versión nueva y conserva mi configuración.
+- [ ] He guardado la oficina si estaba pendiente.
+- [ ] He dejado la automatización pausada o activa según lo que quería.
 
-- [ ] He probado una única marca mediante `/woffu/punch` con el scheduler pausado.
-- [ ] He comprobado el resultado directamente en Woffu.
-- [ ] He revisado el plan semanal, vacaciones, pausas y marcas manuales.
-- [ ] Sé que necesito `LIVE`, escritura `true` y automatización activa para el scheduler real.
-- [ ] Sé cómo pausar la webapp y cómo poner `WOFFU_WRITE_ENABLED = false`.
-
-### Al terminar
-
-- [ ] He dejado `MODE = TEST`.
-- [ ] He dejado `WOFFU_WRITE_ENABLED = false`.
-- [ ] He dejado la automatización en **Pausada**.
-- [ ] He comprobado el estado final en `/health` y en la webapp.
-
-Con todos los puntos correspondientes verificados, la copia está configurada y sabes cómo usarla, comprobarla y detenerla de forma segura.
+Guía revisada el **6 de noviembre de 2026**, contrastada con el código del proyecto y los enlaces oficiales citados. Las etiquetas de los paneles externos pueden variar; no se ha repetido el alta completa con una cuenta nueva para esta revisión.

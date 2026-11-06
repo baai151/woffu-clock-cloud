@@ -4,26 +4,24 @@ Webapp de prueba para planificar y automatizar fichajes de una cuenta Woffu medi
 
 ## Tutorial completo para principiantes
 
-Si empiezas sin cuenta de GitHub o Cloudflare y no tienes conocimientos técnicos, sigue la guía paso a paso:
+La guía se sigue solo con el navegador, sin instalar programas ni saber programar. Elige tu punto de partida:
 
-### [Abrir la guía completa de configuración y uso](docs/SETUP_TESTING_ES.md)
+| Qué necesitas | Enlace |
+| --- | --- |
+| Instalar por primera vez | [Guía desde cero](docs/SETUP_TESTING_ES.md) |
+| Recibir las novedades en una copia existente | [Actualizar con Sync fork y comprobar Cloudflare](docs/SETUP_TESTING_ES.md#16-actualizar-la-webapp-en-el-futuro) |
+| Aprender a configurar y usar la web | [Oficina, jornada, calendario y marcas manuales](docs/SETUP_TESTING_ES.md#11-cómo-se-usa-la-webapp) |
+| Detener los fichajes o resolver un error | [Detener la automatización](docs/SETUP_TESTING_ES.md#15-detener-la-automatización) · [Solución de problemas](docs/SETUP_TESTING_ES.md#17-solución-de-problemas) |
 
-La guía explica desde cero:
+**Cada persona necesita su propia copia.** Un fork copia los archivos del proyecto, no los datos ni las contraseñas de otra persona. Cada Worker conecta una cuenta Woffu y tiene una sola configuración de oficina y horario.
 
-- Cómo crear las cuentas de GitHub y Cloudflare, con enlaces oficiales.
-- Cómo hacer tu propia copia del repositorio sin instalar programas.
-- Cómo desplegar el Worker y comprobar la base D1.
-- Cómo guardar las credenciales correctamente como secretos.
-- Cómo probar la conexión sin fichar.
-- Qué hace cada pantalla de la webapp.
-- Cómo probar un fichaje manual y el scheduler de forma controlada.
-- Cómo detener, actualizar y diagnosticar la aplicación.
+La guía indica dónde pulsar, qué escribir y qué resultado comprobar. Incluye la creación de cuentas, el despliegue, la conexión con Woffu sin fichar y una prueba real opcional, separada del recorrido de instalación.
 
 > Utiliza únicamente una cuenta Woffu de prueba o una cuenta para la que tengas autorización expresa. Empieza siempre con `MODE=TEST`, `WOFFU_WRITE_ENABLED=false` y la automatización pausada.
 
 ## Estado actual
 
-Interfaz clara con identidad Capgemini y bienvenida 3D. La animación se muestra una vez por sesión, se puede saltar y respeta el movimiento reducido. Puede repetirse desde **Ajustes → Bienvenida**.
+Interfaz renovada con una sorpresa de bienvenida. La animación se muestra una vez por sesión, se puede saltar y respeta el movimiento reducido. Puede repetirse desde **Ajustes → Bienvenida**.
 
 En **Ajustes → Horario base** puedes elegir una jornada de **6 u 8 horas**, ambas partidas, con **cuatro marcas y al menos una hora de descanso**. Ambas conservan los ajustes aleatorios y el equilibrio semanal; las vacaciones descuentan la duración de la jornada seleccionada. Las configuraciones existentes mantienen 8 horas por defecto.
 
