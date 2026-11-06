@@ -2,7 +2,7 @@ import { OFFICES, HOLIDAY_CALENDAR_VERSION, isOffice, hasHolidayCalendar, getHol
 import appStyles from "./ui-styles.js";
 import { uiAssetResponse } from "./ui-assets.js";
 
-const APP_VERSION = "3.6.0-capgemini";
+const APP_VERSION = "3.6.1-capgemini";
 const TIMEZONE = "Europe/Madrid";
 const MAX_OFFSET_SECONDS = 299;
 const MAX_DAILY_DEVIATION_SECONDS = 180;
@@ -1738,7 +1738,9 @@ function clientApp() {
     const todayReason = dayReason(today);
     const todayTitle = dateLabel(data.today, { weekday: "long", day: "numeric", month: "long" });
     const total = week.complete ? formatDuration(week.effectiveTotal) : "Pendiente";
-    const target = week.targetSeconds === null ? "pendiente" : (week.targetSeconds / 3600) + " h";
+    const target = week.targetSeconds === null ? "pendiente"
+      : week.targetSeconds % 3600 === 0 ? (week.targetSeconds / 3600) + " h"
+      : formatDuration(week.targetSeconds);
     const weekDates = dateLabel(week.start, { day: "numeric", month: "short" }) + " – " +
       dateLabel(week.end, { day: "numeric", month: "long", year: "numeric" });
     const days = week.days.map((day) => {
