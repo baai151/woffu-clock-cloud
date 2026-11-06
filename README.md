@@ -21,7 +21,7 @@ La guía indica dónde pulsar, qué escribir y qué resultado comprobar. Incluye
 
 ## Estado actual
 
-Interfaz renovada con una sorpresa de bienvenida. La animación se muestra una vez por sesión, se puede saltar y respeta el movimiento reducido. Puede repetirse desde **Ajustes → Bienvenida**.
+Interfaz renovada con una sorpresa de bienvenida. La bienvenida aparece al abrir, recargar o volver a la web, tanto en móvil como en ordenador. Se puede saltar y, con movimiento reducido, muestra una versión breve sin giros. Puede repetirse desde **Ajustes → Bienvenida**.
 
 En **Ajustes → Horario base** puedes elegir una jornada de **6 u 8 horas**, ambas partidas, con **cuatro marcas y al menos una hora de descanso**. Ambas conservan los ajustes aleatorios y el equilibrio semanal; las vacaciones descuentan la duración de la jornada seleccionada. Las configuraciones existentes mantienen 8 horas por defecto.
 

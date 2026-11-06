@@ -2,7 +2,7 @@ import { OFFICES, HOLIDAY_CALENDAR_VERSION, isOffice, hasHolidayCalendar, getHol
 import appStyles from "./ui-styles.js";
 import { uiAssetResponse } from "./ui-assets.js";
 
-const APP_VERSION = "3.6.1-capgemini";
+const APP_VERSION = "3.6.2-capgemini";
 const TIMEZONE = "Europe/Madrid";
 const MAX_OFFSET_SECONDS = 299;
 const MAX_DAILY_DEVIATION_SECONDS = 180;
@@ -1383,80 +1383,92 @@ function clientApp() {
     saveVacations: document.getElementById("saveVacations"),
   };
 
+  const showBrandIntro = createBrandIntro();
   bindNavigation();
   bindGlobalActions();
   showBrandIntro();
   restoreCache();
   loadData({ silent: Boolean(state.data) });
 
-  function showBrandIntro({ replay = false } = {}) {
-    const intro = document.getElementById("brandIntro");
-    if (!intro.hidden) return;
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const key = "woffu-capgemini-welcome-v2";
-    try {
-      if (!replay && sessionStorage.getItem(key)) return;
-      sessionStorage.setItem(key, "seen");
-    } catch { if (!replay) return; }
-    if (reducedMotion.matches) {
-      if (replay) toast("La animación está desactivada por tu preferencia de movimiento reducido.");
-      return;
+  function createBrandIntro() {
+    let activeDismiss = null;
+
+    // Mobile browsers can restore an existing document without loading it again.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") activeDismiss?.(false);
+      else show();
+    });
+    window.addEventListener("pagehide", () => activeDismiss?.(false));
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) show();
+    });
+    return show;
+
+    function show({ replay = false } = {}) {
+      const intro = document.getElementById("brandIntro");
+      if (document.visibilityState === "hidden" || !intro.hidden) return;
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      intro.classList.toggle("introReduced", reducedMotion.matches);
+
+      const app = document.querySelector(".app");
+      const skip = document.getElementById("skipBrandIntro");
+      const backdrop = intro.querySelector(".introBackdrop");
+      const previousFocus = document.activeElement;
+      let fallback;
+      const dismiss = (restoreFocus = replay) => {
+        if (intro.hidden) return;
+        intro.hidden = true;
+        activeDismiss = null;
+        app.inert = false;
+        document.body.classList.remove("introActive");
+        clearTimeout(fallback);
+        window.removeEventListener("keydown", onKeyDown, true);
+        reducedMotion.removeEventListener("change", onMotionChange);
+        intro.removeEventListener("animationend", onAnimationEnd);
+        skip.removeEventListener("click", onSkip);
+        if (restoreFocus) {
+          const target = previousFocus && previousFocus !== document.body
+            ? previousFocus : app.querySelector(".desktopLinks [data-view='home'], .bottomNav [data-view='home']");
+          // The first navigation can be hidden at a mobile breakpoint.
+          const visibleTarget = target?.getClientRects().length ? target
+            : app.querySelector(".headerControl");
+          visibleTarget?.focus({ preventScroll: true });
+        } else {
+          skip.blur();
+        }
+      };
+      const onSkip = () => dismiss(true);
+      const onMotionChange = () => dismiss();
+      const onAnimationEnd = (event) => {
+        if (event.target === intro && event.animationName === "introAway") dismiss();
+      };
+      const onKeyDown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          dismiss(true);
+        } else if (event.key === "Tab") {
+          event.preventDefault();
+          skip.focus({ preventScroll: true });
+        }
+      };
+
+      activeDismiss = dismiss;
+      // Defer the backdrop until the page is visible; subsequent openings use its cache.
+      backdrop.src = backdrop.dataset.src;
+      app.inert = true;
+      document.body.classList.add("introActive");
+      // Commit the hidden state so a fast page restore restarts the CSS sequence.
+      void intro.offsetWidth;
+      intro.hidden = false;
+      skip.focus({ preventScroll: true });
+      skip.addEventListener("click", onSkip);
+      intro.addEventListener("animationend", onAnimationEnd);
+      window.addEventListener("keydown", onKeyDown, true);
+      reducedMotion.addEventListener("change", onMotionChange, { once: true });
+      // Release the interface even if an animation event or an asset fails.
+      fallback = setTimeout(() => dismiss(), reducedMotion.matches ? 1200 : 3800);
     }
-
-    const app = document.querySelector(".app");
-    const skip = document.getElementById("skipBrandIntro");
-    const backdrop = intro.querySelector(".introBackdrop");
-    const previousFocus = document.activeElement;
-    let fallback;
-    const dismiss = (restoreFocus = replay) => {
-      if (intro.hidden) return;
-      intro.hidden = true;
-      app.inert = false;
-      document.body.classList.remove("introActive");
-      clearTimeout(fallback);
-      window.removeEventListener("keydown", onKeyDown, true);
-      reducedMotion.removeEventListener("change", onMotionChange);
-      intro.removeEventListener("animationend", onAnimationEnd);
-      skip.removeEventListener("click", onSkip);
-      if (restoreFocus) {
-        const target = previousFocus && previousFocus !== document.body
-          ? previousFocus : app.querySelector(".desktopLinks [data-view='home'], .bottomNav [data-view='home']");
-        // The first navigation can be hidden at a mobile breakpoint.
-        const visibleTarget = target?.getClientRects().length ? target
-          : app.querySelector(".headerControl");
-        visibleTarget?.focus({ preventScroll: true });
-      } else {
-        skip.blur();
-      }
-    };
-    const onSkip = () => dismiss(true);
-    const onMotionChange = () => dismiss();
-    const onAnimationEnd = (event) => {
-      if (event.target === intro && event.animationName === "introAway") dismiss();
-    };
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        dismiss(true);
-      } else if (event.key === "Tab") {
-        event.preventDefault();
-        skip.focus({ preventScroll: true });
-      }
-    };
-
-    // The heavier backdrop is fetched only when this session actually plays the intro.
-    backdrop.src = backdrop.dataset.src;
-    app.inert = true;
-    document.body.classList.add("introActive");
-    intro.hidden = false;
-    skip.focus({ preventScroll: true });
-    skip.addEventListener("click", onSkip);
-    intro.addEventListener("animationend", onAnimationEnd);
-    window.addEventListener("keydown", onKeyDown, true);
-    reducedMotion.addEventListener("change", onMotionChange, { once: true });
-    // Release the interface even if an animation event or an asset fails.
-    fallback = setTimeout(() => dismiss(), 3800);
   }
 
   function bindNavigation() {
@@ -2017,7 +2029,7 @@ function clientApp() {
       '<section class="card"><h2 class="cardTitle">Automatización</h2><p class="cardHint">Activa o pausa los fichajes programados.</p>' +
       '<button class="button ' + (config.active ? "danger" : "primary") + '" style="width:100%" data-action="toggle-active">' +
       (config.active ? "Pausar automatización" : data.automation.ready ? "Activar automatización" : "Configurar oficina") + '</button></section>' +
-      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La animación se muestra una vez por sesión. Puedes volver a verla aquí.</p>' +
+      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La bienvenida aparece al abrir, recargar o volver a la web, también en móvil. Con movimiento reducido se muestra una versión breve sin giros. Puedes repetirla aquí.</p>' +
       '<button class="button secondary" type="button" data-action="replay-intro">Repetir animación</button></section>' +
       '<section class="card"><h2 class="cardTitle">Diagnóstico</h2>' +
       '<div class="manualList"><div class="manualItem"><div class="manualMain"><strong>Versión</strong><span>' +
