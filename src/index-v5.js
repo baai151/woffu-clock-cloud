@@ -3,7 +3,7 @@ import { OFFICES, HOLIDAY_CALENDAR_VERSION, isOffice, hasHolidayCalendar, getHol
 import appStyles from "./ui-styles.js";
 import { uiAssetResponse } from "./ui-assets.js";
 
-const APP_VERSION = "3.6.3-capgemini";
+const APP_VERSION = "3.6.4-capgemini";
 const TIMEZONE = "Europe/Madrid";
 const MAX_OFFSET_SECONDS = 299;
 const MAX_DAILY_DEVIATION_SECONDS = 180;
@@ -1229,7 +1229,12 @@ function appShell() {
   <title>Woffu Clock</title>
   <style>${appStyles}</style>
 </head>
-<body>
+<body class="entryPending">
+<div id="entryCover" class="entryCover" role="status" aria-live="polite">
+  <img src="/assets/capgemini-white.svg" alt="Capgemini" width="400" height="91">
+  <p>Preparando tu espacio…</p>
+  <noscript>Activa JavaScript para abrir Woffu Clock.</noscript>
+</div>
 <div id="brandIntro" class="brandIntro" role="dialog" aria-modal="true" aria-label="Bienvenida a Woffu Clock" hidden>
   <div class="introVisual" aria-hidden="true">
     <img class="introBackdrop" data-src="/assets/intro-glass-v1.webp" alt="" width="1600" height="900" decoding="async">
@@ -1248,7 +1253,7 @@ function appShell() {
   </div>
   <button type="button" id="skipBrandIntro" class="brandIntroSkip">Saltar intro <span aria-hidden="true">Esc</span></button>
 </div>
-<div class="app">
+<div class="app" inert>
   <header class="topbar">
     <div class="topbarInner">
       <div class="mobileBrand"><img src="/assets/capgemini-white.svg" alt="Capgemini" width="145" height="34"><span>Woffu Clock</span></div>
@@ -1399,11 +1404,22 @@ function clientApp() {
     let opening = null;
     let generation = 0;
 
+    function holdEntry() {
+      document.getElementById("entryCover").hidden = false;
+      document.body.classList.add("entryPending");
+      document.querySelector(".app").inert = true;
+    }
+    function releaseEntry() {
+      document.getElementById("entryCover").hidden = true;
+      document.body.classList.remove("entryPending");
+      document.querySelector(".app").inert = Boolean(activeDismiss);
+    }
     function suspend() {
       generation++;
       opening = null;
       pending = true;
       activeDismiss?.(false);
+      if (authenticated) holdEntry();
     }
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") suspend();
@@ -1419,7 +1435,7 @@ function clientApp() {
         return open({ verified: true });
       },
       replay: () => open({ replay: true }),
-      block() { authenticated = false; suspend(); },
+      block() { authenticated = false; suspend(); releaseEntry(); },
     };
 
     async function open({ replay = false, verified = false } = {}) {
@@ -1429,15 +1445,18 @@ function clientApp() {
       const current = generation;
       const attempt = {};
       opening = attempt;
+      holdEntry();
       try {
         // Startup is verified by bootstrap; restored pages and explicit replays
         // check the session without loading data or opening a password dialog.
         if (!verified) await api("/api/session");
         if (current !== generation) return;
+        const backdrop = intro.querySelector(".introBackdrop");
+        backdrop.src = backdrop.dataset.src;
         let assetTimer;
         try {
           await Promise.race([
-            Promise.allSettled(Array.from(intro.querySelectorAll(".introWordmark, .introEmblemFace"),
+            Promise.allSettled(Array.from(intro.querySelectorAll(".introWordmark, .introEmblemFace, .introEmblemLayer:first-child, .introBackdrop"),
               (image) => image.decode?.())),
             new Promise((resolve) => { assetTimer = setTimeout(resolve, 1500); }),
           ]);
@@ -1445,8 +1464,14 @@ function clientApp() {
         if (current !== generation || !authenticated || document.visibilityState === "hidden") return;
         pending = false;
         show({ replay });
+        // The animated overlay is already covering the app before revealing any
+        // cached or freshly rendered summary underneath it.
+        releaseEntry();
       } catch (error) {
-        if (current === generation) toast(error.message || "No se ha podido comprobar la sesión.", true);
+        if (current === generation) {
+          releaseEntry();
+          toast(error.message || "No se ha podido comprobar la sesión.", true);
+        }
       } finally {
         if (opening === attempt) opening = null;
       }
@@ -1519,13 +1544,13 @@ function clientApp() {
       window.addEventListener("keydown", onKeyDown, true);
       reducedMotion.addEventListener("change", onMotionChange, { once: true });
       // Release the interface even if an animation event or an asset fails.
-      fallback = setTimeout(() => dismiss(), 6000);
+      fallback = setTimeout(() => dismiss(), 10000);
       frame = requestAnimationFrame(() => {
         frame = requestAnimationFrame(() => {
           if (intro.hidden || document.visibilityState === "hidden") return;
           intro.classList.add("introPlaying");
           clearTimeout(fallback);
-          fallback = setTimeout(() => dismiss(), reducedMotion.matches ? 1200 : 3800);
+          fallback = setTimeout(() => dismiss(), reducedMotion.matches ? 3000 : 7600);
         });
       });
     }
@@ -1701,6 +1726,7 @@ function clientApp() {
       return true;
     } catch (error) {
       if (requestId !== state.requestId || error.name === "AbortError") return false;
+      brandIntro.block();
       if (options.throwOnError) throw error;
       toast(error.message || "No se han podido cargar los datos.", true);
       if (!state.data) showFatal(error.message);
@@ -2104,7 +2130,7 @@ function clientApp() {
       '<section class="card"><h2 class="cardTitle">Automatización</h2><p class="cardHint">Activa o pausa los fichajes programados.</p>' +
       '<button class="button ' + (config.active ? "danger" : "primary") + '" style="width:100%" data-action="toggle-active">' +
       (config.active ? "Pausar automatización" : data.automation.ready ? "Activar automatización" : "Configurar oficina") + '</button></section>' +
-      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">La bienvenida empieza después de iniciar sesión y cargar la aplicación, también en móvil. Se repite al volver a la web. Con movimiento reducido se muestra una versión breve sin giros. Puedes repetirla aquí.</p>' +
+      '<section class="card"><h2 class="cardTitle">Bienvenida</h2><p class="cardHint">Tras iniciar sesión, verás primero la bienvenida y después el resumen. La animación dura unos 7 segundos y se repite al volver a la web, también en móvil. Con movimiento reducido se muestra una bienvenida de 3 segundos sin giros. Puedes saltarla o repetirla aquí.</p>' +
       '<button class="button secondary" type="button" data-action="replay-intro">Repetir animación</button></section>' +
       '<section class="card"><h2 class="cardTitle">Diagnóstico</h2>' +
       '<div class="manualList"><div class="manualItem"><div class="manualMain"><strong>Versión</strong><span>' +

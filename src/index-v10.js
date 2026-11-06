@@ -1,7 +1,7 @@
 import app from "./index-v7.js";
 import { prepareScheduledDay, getPunchBlockReason } from "./index-v5.js";
 
-const APP_VERSION = "3.6.3-capgemini";
+const APP_VERSION = "3.6.4-capgemini";
 const WOFFU_BASE_URL = "https://app.woffu.com";
 const TIMEZONE = "Europe/Madrid";
 const RECOVERY_WINDOW_SECONDS = 10 * 60;

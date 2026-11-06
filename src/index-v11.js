@@ -1,7 +1,7 @@
 import { attachBrowserSession } from "./browser-auth.js";
 import app from "./index-v10.js";
 
-const APP_VERSION = "3.6.3-capgemini";
+const APP_VERSION = "3.6.4-capgemini";
 const LEGACY_UI_VERSION = "3.0.0-mobile-fast";
 const PREVIOUS_BACKEND_VERSION = "3.4.0-weekly-compensation";
 

@@ -20,7 +20,7 @@ function loader() {
     updatePendingControls() {}, showLoading() {}, cacheState() {}, resetVacations() {},
     vacationDifferenceCount: () => 0,
     renderAll: () => events.push("render"),
-    brandIntro: { ready: () => events.push("welcome") },
+    brandIntro: { ready: () => events.push("welcome"), block: () => events.push("release-cover") },
     toast: () => events.push("error"), showFatal() {},
   });
   vm.runInContext(loadCode, context);
@@ -43,11 +43,11 @@ test("rejected bootstrap never starts the welcome; a successful retry does", asy
   const failed = page.load();
   page.waiting[0].reject(Error("Session expired"));
   assert.equal(await failed, false);
-  assert.deepEqual(page.events, ["error"]);
+  assert.deepEqual(page.events, ["release-cover", "error"]);
   const retried = page.load();
   page.waiting[1].resolve({ ok: true, today: "2026-11-06" });
   assert.equal(await retried, true);
-  assert.deepEqual(page.events, ["error", "render", "welcome"]);
+  assert.deepEqual(page.events, ["release-cover", "error", "render", "welcome"]);
 });
 
 test("a superseded bootstrap cannot start another welcome", async () => {

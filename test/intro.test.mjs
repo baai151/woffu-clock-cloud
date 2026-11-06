@@ -38,6 +38,7 @@ function classList() {
 
 function setup({ reduced = false, hidden = false, access = async () => {}, decode = async () => {} } = {}) {
   const backdrop = { dataset: { src: "/assets/intro-glass-v1.webp" } };
+  const cover = { hidden: false };
   const intro = { ...eventTarget(), classList: classList(), hidden: true,
     querySelector: () => backdrop, querySelectorAll: () => [{ decode }] };
   let document;
@@ -48,10 +49,11 @@ function setup({ reduced = false, hidden = false, access = async () => {}, decod
   });
   const skip = { ...eventTarget(), ...focusable() };
   const nav = focusable();
-  const app = { inert: false, querySelector: () => nav };
+  const app = { inert: true, querySelector: () => nav };
   const body = { classList: classList() };
+  body.classList.add("entryPending");
   document = { ...eventTarget(), body, visibilityState: hidden ? "hidden" : "visible", activeElement: body,
-    getElementById: (id) => id === "brandIntro" ? intro : skip, querySelector: () => app };
+    getElementById: (id) => id === "brandIntro" ? intro : id === "entryCover" ? cover : skip, querySelector: () => app };
   const motion = { ...eventTarget(), matches: reduced };
   const window = { ...eventTarget(), matchMedia: () => motion };
   const timers = new Map();
@@ -70,7 +72,7 @@ function setup({ reduced = false, hidden = false, access = async () => {}, decod
   });
   vm.runInContext(introCode, context);
   const controller = context.createBrandIntro();
-  return { intro, skip, app, backdrop, motion, window, document, timers, frames, controller, messages, accessCalls,
+  return { intro, cover, skip, app, backdrop, motion, window, document, timers, frames, controller, messages, accessCalls,
     finish: () => intro.emit("animationend", { target: intro, animationName: "introAway" }),
     visibility(value) { document.visibilityState = value; document.emit("visibilitychange"); },
     paint() { const work = [...frames.values()]; frames.clear(); work.forEach((fn) => fn()); },
@@ -80,10 +82,17 @@ async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); 
 async function ready(page) { await page.controller.ready(); page.paint(); page.paint(); }
 function assertReleased(page) {
   assert.equal(page.intro.hidden, true);
+  assert.equal(page.cover.hidden, true);
   assert.equal(page.app.inert, false);
   assert.equal(page.document.body.classList.values.size, 0);
   assert.equal(page.window.listeners.has("keydown"), false);
   assert.equal(page.motion.listeners.size + page.intro.listeners.size + page.skip.listeners.size + page.timers.size + page.frames.size, 0);
+}
+function assertWaiting(page) {
+  assert.equal(page.intro.hidden, true);
+  assert.equal(page.cover.hidden, false);
+  assert.equal(page.app.inert, true);
+  assert.equal(page.document.body.classList.values.has("entryPending"), true);
 }
 
 test("welcome waits for authenticated bootstrap, loaded logos and visible frames", async () => {
@@ -92,21 +101,23 @@ test("welcome waits for authenticated bootstrap, loaded logos and visible frames
   page.window.emit("pageshow", { persisted: false });
   page.window.emit("focus");
   await settle();
-  assertReleased(page);
+  assertWaiting(page);
   assert.equal(page.accessCalls.length, 0);
   const opening = page.controller.ready();
   await settle();
-  assert.equal(page.intro.hidden, true);
-  assert.equal(page.backdrop.src, undefined);
+  assertWaiting(page);
+  assert.equal(page.backdrop.src, page.backdrop.dataset.src);
   decode();
   await opening;
   assert.equal(page.intro.hidden, false);
+  assert.equal(page.cover.hidden, true);
+  assert.equal(page.app.inert, true, "summary stays inaccessible until the full animation ends");
   assert.equal(page.intro.classList.values.has("introPlaying"), false);
   page.paint();
   assert.equal(page.intro.classList.values.has("introPlaying"), false);
   page.paint();
   assert.equal(page.intro.classList.values.has("introPlaying"), true);
-  assert.equal([...page.timers.values()][0].ms, 3800);
+  assert.equal([...page.timers.values()][0].ms, 7600);
   page.finish();
   assertReleased(page);
 });
@@ -131,13 +142,13 @@ test("later data loads and duplicate lifecycle events do not replay a completed 
 test("a background load waits, then checks access and plays when it becomes visible", async () => {
   const page = setup({ hidden: true });
   await ready(page);
-  assertReleased(page);
+  assertWaiting(page);
   page.visibility("visible");
   await settle();
   assert.equal(page.intro.hidden, false);
   assert.deepEqual(page.accessCalls, ["/api/session"]);
   page.visibility("hidden");
-  assertReleased(page);
+  assertWaiting(page);
   page.visibility("visible");
   await settle();
   assert.equal(page.intro.hidden, false);
@@ -150,10 +161,10 @@ test("back-forward restoration rechecks access before showing the welcome", asyn
   const page = setup({ access: () => new Promise((resolve) => { grant = resolve; }) });
   await ready(page);
   page.window.emit("pagehide");
-  assertReleased(page);
+  assertWaiting(page);
   page.window.emit("pageshow", { persisted: true });
   await settle();
-  assert.equal(page.intro.hidden, true);
+  assertWaiting(page);
   page.window.emit("focus");
   assert.equal(page.accessCalls.length, 1);
   grant();
@@ -169,15 +180,17 @@ test("failed access and hidden or cancelled pending loads cannot start the intro
   await settle();
   assertReleased(denied);
   assert.deepEqual(denied.messages, ["Session expired"]);
-  for (const cancel of [page => page.visibility("hidden"), page => page.controller.block()]) {
+  for (const block of [false, true]) {
     let decode;
     const page = setup({ decode: () => new Promise((resolve) => { decode = resolve; }) });
     const opening = page.controller.ready();
     await settle();
-    cancel(page);
+    if (block) page.controller.block();
+    else page.visibility("hidden");
     decode();
     await opening;
-    assertReleased(page);
+    if (block) assertReleased(page);
+    else assertWaiting(page);
   }
 });
 
@@ -195,13 +208,13 @@ test("slow or failed images never prevent entry", async () => {
   }
 });
 
-test("reduced motion keeps a short static welcome after authentication", async () => {
+test("reduced motion keeps a three-second static welcome after authentication", async () => {
   const page = setup({ reduced: true });
   await ready(page);
   assert.equal(page.intro.hidden, false);
   assert.equal(page.intro.classList.values.has("introReduced"), true);
   const timer = [...page.timers.values()][0];
-  assert.equal(timer.ms, 1200);
+  assert.equal(timer.ms, 3000);
   timer.fn();
   assertReleased(page);
 });
